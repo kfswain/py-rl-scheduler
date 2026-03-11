@@ -1,8 +1,15 @@
 # py-inference-scheduler
-A Python implementation of an inference request scheduler, drawing inspiration from the k8s Inference Gateway project.
+A Python implementation of an inference request scheduler, while the focus of this repo will be related to RL sampling improvements, much of what is done here will be translatable to the other inference scheduling uses & systems.
+
+***Note***: RL is an active area of research, much of our understanding may shift over time. Expect rapid updates as we explore optimizations  
+
+## WIP
+This repo is a wip, and currently only implements the scheduling portion of the solutions described in: https://docs.google.com/document/d/1FsmXdVILBKlr9c7ZJqH-gkcR-YNu4CT6fwMQ5s9Gbsk/edit?pli=1&tab=t.0
+
+A rough-in roadmap is [here](#roadmap).
 
 
-## How to use
+## Ray Serve example
 This example uses a simple implementation of prefix cache aware routing. This example uses Ray Serve's custom routing: https://docs.ray.io/en/latest/serve/advanced-guides/custom-request-router.html. 
 
 ### Prereqs
@@ -48,17 +55,13 @@ curl \
 ![alt text](./images/scheduler_logs.png)
 
 
-## Next steps
-This is a rough in example. But creates the connection to make a _python native_ router that works in python native environs, such as Ray. This connection is important because it allows us to bring the learnings of the [Inference Gateway](https://github.com/kubernetes-sigs/gateway-api-inference-extension) project to non-k8s environments. Allowing the communities to centralize efforts and create mutually beneficial optimizations. To improve this effort we will:
+## Roadmap
 
-- Make integration with the vLLM replica data simpler. 
-   - Reading the Ray implementation of [Prefix Aware Routing](https://docs.ray.io/en/latest/serve/llm/user-guides/prefix-aware-routing.html) made it difficult to discern how data is shared in the Ray environemnt. We will work on this UX and allow these to be more flexible.
-
-- Implement the most valuable IGW plugins here (like running requests + prefix cache, etc).
-  - Long-term work will be to explore how keeping the two efforts in sync in an automated way
-
-- Benchmark to prove the value remains.
-- Scale test this effort to prove that it works in high-volume situations, (such as RL sampling)
-- Make this experiment-ready, so this tool is reliable, and gives optimal inference/sampling performance out of the box.
-
-- Optimisticially, work with the Ray team to integrate the custom routing to be more friendly to our proven and [adopted](https://github.com/llm-d/llm-d-inference-scheduler) framework for inference scheduling.
+- Implement Batch composition mechanism
+- Implement RL-focused flow control to help solve
+  - Sample tail latency reduction
+  - Throughput improvements
+  - Rebalancing samplers when long tail requests causes sampler imbalance
+- Natively support sophisticated serving mechanisms such as Wide-EP with Wide-EP specific scheduling improvements
+- Multi-turn/Agentic RL specific optimizations
+- Experimentation with novel ideas to prove sampling efficiency improvements do not negatively impact model convergence
