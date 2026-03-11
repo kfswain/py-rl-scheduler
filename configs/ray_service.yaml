@@ -1,0 +1,114 @@
+# Copyright 2026 llm-d
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: ray.io/v1
+kind: RayService
+metadata:
+  name: ray-serve-llm
+spec:
+  rayClusterConfig:
+    rayVersion: "2.52.0"
+    headGroupSpec:
+      rayStartParams:
+        num-cpus: "0"
+        num-gpus: "0"
+        dashboard-host: "0.0.0.0"
+      template:
+        spec:
+          containers:
+          - name: ray-head
+            image: rayproject/ray-llm:2.52.0-py311-cu128
+            ports:
+            - containerPort: 8000
+              name: serve
+              protocol: TCP
+            - containerPort: 8080
+              name: metrics
+              protocol: TCP
+            - containerPort: 6379
+              name: gcs
+              protocol: TCP
+            - containerPort: 8265
+              name: dashboard
+              protocol: TCP
+            - containerPort: 10001
+              name: client
+              protocol: TCP
+            env:
+            # This is for routing inference-perf requests through a custom router - not necessary
+            - name: RAY_SERVE_DEFAULT_HTTP_HOST
+              value: "0.0.0.0"
+            - name: ROUTER_CONFIG_PATH
+              value: "/etc/scheduler/scheduler.yaml"
+            resources:
+              limits:
+                cpu: "4"
+                memory: "12Gi"
+              requests:
+                cpu: "4"
+                memory: "12Gi"
+            volumeMounts:
+            - mountPath: /tmp/ray
+              name: ray-tmp
+            - mountPath: /etc/scheduler
+              name: scheduler-vol
+          volumes:
+          - name: ray-tmp
+            emptyDir: {}
+          - name: scheduler-vol
+            configMap:
+              name: scheduler-config
+    workerGroupSpecs:
+    - replicas: 4
+      minReplicas: 4
+      maxReplicas: 4
+      numOfHosts: 1
+      groupName: gpu-group
+      rayStartParams:
+        num-gpus: "4"
+      template:
+        spec:
+          containers:
+          - name: ray-worker
+            image: rayproject/ray-llm:2.52.0-py311-cu128
+            env:
+            - name: HUGGING_FACE_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: hf_api_token
+            - name: RAY_SERVE_DEFAULT_HTTP_HOST
+              value: "0.0.0.0"
+            - name: ROUTER_CONFIG_PATH
+              value: "/etc/scheduler/scheduler.yaml"
+            resources:
+              limits:
+                cpu: "32"
+                memory: "32Gi"
+                nvidia.com/gpu: "4"
+              requests:
+                cpu: "32"
+                memory: "32Gi"
+                nvidia.com/gpu: "4"
+            volumeMounts:
+            - mountPath: /tmp/ray
+              name: ray-tmp
+            - mountPath: /etc/scheduler
+              name: scheduler-vol
+          volumes:
+          - name: ray-tmp
+            emptyDir: {}
+          - name: scheduler-vol
+            configMap:
+              name: scheduler-config
