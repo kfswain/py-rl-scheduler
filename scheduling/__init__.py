@@ -37,6 +37,8 @@ from .framework import (
 from .prefix_plugin import PrefixCacheScorer
 from .round_robin_plugin import RoundRobinScorer
 from .plugins import LeastQueueScorer, WaitingQueueScorer, RunningQueueScorer, KVCacheScorer
+from .ray_request_scheduler import RayRequestScheduler
+from .inflight_store import InflightStore
 
 __all__ = [
     "Scheduler",
@@ -55,4 +57,6 @@ __all__ = [
     "WaitingQueueScorer",
     "RunningQueueScorer",
     "KVCacheScorer",
+    "RayRequestScheduler",
+    "InflightStore",
 ]

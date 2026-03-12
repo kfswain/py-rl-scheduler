@@ -55,4 +55,6 @@ class Scheduler:
         result = SchedulingResult(profile_results={k: v or ProfileRunResult() for k, v in profile_results.items()}, primary_profile_name=primary)
         # todo: this isnt exactly true with multiple profiles
         # we should update this to be more naunced logging in the future
+        selected_eps = result.profile_results[primary].endpoint_list[:1] if primary in result.profile_results else []
+        print(f"Selected endpoint {selected_eps}")
         return result
