@@ -12,3 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .interface import *
+from .types import *
+from .registry import *
+from .helpers import *
+
+# Explicitly export internal registries for tests/advanced inspection
+from .registry import _SCORERS, _PICKERS, _FILTERS, _PROFILE_HANDLERS
