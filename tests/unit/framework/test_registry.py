@@ -18,6 +18,7 @@ from scheduling.framework import _SCORERS, _PICKERS, _PROFILE_HANDLERS
 from scheduling.plugins import WaitingQueueScorer, MaxScorePicker, SingleProfileHandler
 
 
+
 def test_registry_populated():
     assert "waiting_queue" in _SCORERS
     assert _SCORERS["waiting_queue"] == WaitingQueueScorer

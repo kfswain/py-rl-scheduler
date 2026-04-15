@@ -47,7 +47,6 @@ from ray.serve._private.common import (
 )
 
 
-
 class IGWRouter(RequestRouter):
     def __init__(
         self,
@@ -179,6 +178,7 @@ class IGWRouter(RequestRouter):
 
 
 # defining an IGW-like scheduler
+
 
 
 def build_custom_openai_app(builder_config: dict):
