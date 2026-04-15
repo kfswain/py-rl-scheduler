@@ -21,7 +21,6 @@ from ..framework import (
     SchedulingResult,
     CycleState,
     ProfileRunResult,
-    ProfileHandler,
     ScoredEndpoint,
 )
 from .config import SchedulerConfig

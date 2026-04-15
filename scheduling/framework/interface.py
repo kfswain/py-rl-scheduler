@@ -14,7 +14,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Mapping
+from typing import Dict, List, Optional, Protocol, Sequence, Mapping
 from .types import Endpoint, ScoredEndpoint, CycleState, LLMRequest, ProfileRunResult
 
 

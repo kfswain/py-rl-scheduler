@@ -16,7 +16,6 @@ import pytest
 from scheduling.core.config import SchedulerConfig
 from scheduling.framework import _SCORERS, _PICKERS, _PROFILE_HANDLERS
 from scheduling.plugins import WaitingQueueScorer, MaxScorePicker, SingleProfileHandler
-import scheduling.plugins
 
 
 def test_registry_populated():

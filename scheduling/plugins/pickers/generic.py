@@ -17,7 +17,6 @@ import random
 from typing import Optional, Sequence
 from ...framework import (
     PickerPlugin,
-    Endpoint,
     ScoredEndpoint,
     CycleState,
     LLMRequest,

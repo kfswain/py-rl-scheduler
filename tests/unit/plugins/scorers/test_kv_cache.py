@@ -14,7 +14,6 @@
 
 
 import pytest
-from typing import Dict, Any
 from scheduling.framework import Endpoint, LLMRequest, CycleState
 from scheduling.plugins import KVCacheScorer
 

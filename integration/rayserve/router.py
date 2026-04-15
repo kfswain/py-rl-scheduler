@@ -14,35 +14,14 @@
 
 
 from scheduling.framework import (
-    ScorerPlugin,
-    PickerPlugin,
-    SchedulerProfile,
-    WeightedScorer,
     Endpoint,
-    ScoredEndpoint,
-    CycleState,
     LLMRequest,
 )
-from scheduling.plugins import (
-    SingleProfileHandler,
-    LeastQueueScorer,
-    WaitingQueueScorer,
-    RunningQueueScorer,
-    KVCacheScorer,
-)
-from scheduling.core.config import SchedulerConfig
-from scheduling import PrefixCacheScorer, RoundRobinScorer
-from scheduling.plugins.scorers.prefix_plugin import (
-    _hash_prompt_bytes,
-    _get_user_input_bytes,
-)
 from scheduling.core.scheduler import Scheduler
-from typing import Dict, Optional, Sequence
+from typing import Optional
 import asyncio
 import random
 import time
-import os
-import yaml
 
 from ray.serve.request_router import (
     PendingRequest,
@@ -51,17 +30,14 @@ from ray.serve.request_router import (
     ReplicaResult,
     RunningReplica,
 )
-from ray.serve.exceptions import BackPressureError
 from ray.actor import ActorHandle
 from ray.serve._private.common import (
     DeploymentHandleSource,
     DeploymentID,
     ReplicaID,
-    ReplicaQueueLengthInfo,
-    RequestMetadata,
     RunningReplicaInfo,
 )
-from typing import List, Optional, Callable
+from typing import List, Callable
 
 
 class IGWRouter(RequestRouter):
@@ -226,7 +202,6 @@ def build_custom_openai_app(builder_config: dict):
 # Hooking into Ray Serve's Request Router
 
 from ray import serve
-from ray.serve.llm.request_router import PrefixCacheAffinityRouter
 from ray.serve.llm import LLMConfig
 
 llm_config = LLMConfig(

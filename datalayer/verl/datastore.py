@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-import time
 import threading
 import logging
 from typing import Dict
