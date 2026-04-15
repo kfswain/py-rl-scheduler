@@ -28,7 +28,6 @@ from verl.experimental.agent_loop.agent_loop import (
 from scheduling.framework import LLMRequest, Endpoint
 from datalayer.verl.metrics import verl_metrics_polling_loop
 from datalayer.verl.datastore import InflightStore
-from scheduling import Scheduler
 
 from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMHttpServer
 
