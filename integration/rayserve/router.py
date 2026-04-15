@@ -18,6 +18,7 @@ from scheduling.framework import (
     LLMRequest,
 )
 from scheduling.core.scheduler import Scheduler
+<<<<<<< HEAD
 from typing import Optional, List, Callable
 import asyncio
 import random
@@ -31,6 +32,12 @@ from ray.llm._internal.serve.core.ingress.builder import (
     make_fastapi_ingress,
 )
 from ray.llm._internal.serve.core.server.builder import build_llm_deployment
+=======
+from typing import Optional
+import asyncio
+import random
+import time
+>>>>>>> 0020ab9 (output from: ruff check --fix)
 
 from ray.serve.request_router import (
     PendingRequest,
@@ -45,6 +52,10 @@ from ray.serve._private.common import (
     ReplicaID,
     RunningReplicaInfo,
 )
+<<<<<<< HEAD
+=======
+from typing import List, Callable
+>>>>>>> 0020ab9 (output from: ruff check --fix)
 
 
 class IGWRouter(RequestRouter):
@@ -201,6 +212,12 @@ def build_custom_openai_app(builder_config: dict):
 
 # Hooking into Ray Serve's Request Router
 
+<<<<<<< HEAD
+=======
+from ray import serve
+from ray.serve.llm import LLMConfig
+
+>>>>>>> 0020ab9 (output from: ruff check --fix)
 llm_config = LLMConfig(
     model_loading_config=dict(
         model_id="qwen-32b",

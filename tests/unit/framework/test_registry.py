@@ -16,7 +16,10 @@ import pytest
 from scheduling.core.config import SchedulerConfig
 from scheduling.framework import _SCORERS, _PICKERS, _PROFILE_HANDLERS
 from scheduling.plugins import WaitingQueueScorer, MaxScorePicker, SingleProfileHandler
+<<<<<<< HEAD
 
+=======
+>>>>>>> 0020ab9 (output from: ruff check --fix)
 
 
 def test_registry_populated():
