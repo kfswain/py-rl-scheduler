@@ -18,5 +18,6 @@ pip:
     - torch
     - torchvision
 py_modules:
-  - "../py-inference-scheduler/integration"
-  - "../py-inference-scheduler/scheduling"
+  - "../py-inference-scheduler-llmd/integration"
+  - "../py-inference-scheduler-llmd/scheduling"
+  - "../py-inference-scheduler-llmd/datalayer"

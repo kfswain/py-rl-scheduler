@@ -5,11 +5,11 @@ profiles:
     scorers:
       - type: waiting_queue
         weight: 5.0
-      - type: running_queue
-        weight: 1.0
+      - type: least_queue
+        weight: 2.0
       - type: kv_cache
         weight: 1.0
       - type: prefix_cache
-        weight: 2.0
+        weight: 1.0
     picker:
       type: max_score

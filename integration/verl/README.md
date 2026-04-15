@@ -1,5 +1,11 @@
 # verl Integration with py-inference-scheduler
 
+## Compatibility Notice
+
+**This integration is designed specifically for [vERL v0.7.1](https://github.com/volcengine/verl/releases/tag/v0.7.1).** 
+
+It utilizes internal API signatures (such as `load_balancer_handle` and specific `_acquire_server` patterns) that were introduced or modified in this release. It is **not backwards compatible** with earlier versions of vERL and may require updates for future releases.
+
 ## Architecture
 
 `verl` manages its own set of Ray Actors for rollouts. By default, it uses a simple LRU cache or least-requests routing. This integration overrides `verl`'s `AgentLoopManager` to delegate routing decisions to the `py-inference-scheduler` engine.
@@ -15,7 +21,23 @@ If you have a `verl` instance and want to enable scheduling:
 
 ### 1. Requirements
 
-Ensure you have both `verl` and `py-inference-scheduler` repositories available.
+Ensure you have both `verl` and `py-inference-scheduler` repositories available. 
+
+You will also need a Docker image with `verl` and the scheduler dependencies installed. You can build your own image or use ours. If you'd like help building a compatible image, we provide an example [Dockerfile](./examples/Dockerfile.verl.ray) to do so. **Note:** if you build your own image, you must update the `image:` fields in [verl-inference-scheduler.yaml](./examples/verl-inference-scheduler.yaml) to point to your new image.
+
+#### Image Pull Secrets (Optional)
+
+If your registry is private, you need to [create a Kubernetes docker-registry secret](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/#create-a-secret-by-providing-credentials-on-the-command-line) to allow nodes to pull the image. Ensure the `imagePullSecrets` configuration in the `verl-inference-scheduler.yaml` file points to the name of your new secret.
+
+Run the following command as an example to create a secret if you are using GCP Artifact Registry:
+
+```bash
+kubectl create secret docker-registry artifact-registry-secret \
+    --docker-server=us-central1-docker.pkg.dev \
+    --docker-username=oauth2accesstoken \
+    --docker-password=$(gcloud auth print-access-token) \
+    --dry-run=client -o yaml | kubectl apply -f -
+```
 
 ### 2. Configure Docker Registry
 
@@ -57,6 +79,25 @@ Before you can submit a job, you must open a local tunnel to the Ray Head Node d
     ```
 1.  **View the Dashboard**: Visit `http://localhost:8265` in your browser to monitor job progress and cluster health.
 
+### 4. Data Preparation
+
+Before submitting the training job, you must generate the GSM8K dataset using `verl`'s data preparation scripts. Run the following command from the root of your `verl` directory:
+
+```bash
+python3 examples/data_preprocess/gsm8k.py --local_save_dir ./data/gsm8k
+```
+This script will download and process the GSM8K dataset, creating the necessary `.parquet` files in `data/gsm8k/` (e.g., `data/gsm8k/train.parquet` and `data/gsm8k/test.parquet`).
+
+> **Note: Ray Upload Issue with `.parquet` files**
+>
+> By default, the official `verl` repository includes `*.parquet` in its `.gitignore` file. When you submit a Ray job with `--working-dir .`, Ray respects the `.gitignore` rules and will silently strip out your training data, causing a `FileNotFoundError` during training.
+> 
+> **To fix this:** Open `.gitignore` in the root of your `verl` repository and comment out the `*.parquet` line under the `# data` section before submitting the job:
+> ```text
+> # data
+> # *.parquet
+> ```
+
 ### 5. Submission Configuration
 
 To use the scheduler, you need to provide a `runtime-env.yaml` and a `scheduler.yaml` (`scheduler.yaml` and `configs/scheduler-configmap.yaml` are the same file - you modify these with your ideal scorer config) in your `verl` working directory.
@@ -75,11 +116,16 @@ env_vars:
 py_modules:
   - "../py-inference-scheduler/integration"
   - "../py-inference-scheduler/scheduling"
+  - "../py-inference-scheduler/datalayer"
 ```
 
-### 6. Hook Injection via Hydra Overrides
+### 6. Running a Training Job
 
-To activate the scheduler, use the `+actor_rollout_ref.rollout.agent.agent_loop_manager_class` Hydra override. Removing it would run the job with vERL's native scheduler.
+There are two primary ways to submit a training job using the scheduler hook.
+
+#### Option A: Using Hydra overrides in CLI:
+
+To activate the scheduler on a standard run, use the `+actor_rollout_ref.rollout.agent.agent_loop_manager_class` Hydra override. Below is an example of doing this with Qwen2-7B using a script provided to us by verl. 
 
 ```bash
 ray job submit \
@@ -87,8 +133,8 @@ ray job submit \
     --runtime-env runtime-env.yaml \
     -- bash examples/grpo_trainer/run_qwen2-7b_math.sh \
     algorithm.adv_estimator=grpo \
-    data.train_files="['code_benchmark/train.parquet']" \
-    data.val_files="['code_benchmark/test.parquet']" \
+    data.train_files="['data/gsm8k/train.parquet']" \
+    data.val_files="['data/gsm8k/test.parquet']" \
     trainer.n_gpus_per_node=8 \
     trainer.nnodes=2 \
     actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=64 \
@@ -106,6 +152,23 @@ ray job submit \
 - **`agent_loop_manager_class`**: Points to the integration hook.
 - **`disable_log_stats=False`**: Required for vLLM to emit local metrics.
 - **`prometheus.enable=True`**: Required to expose the `/metrics` endpoint that the scheduler polls.
+
+#### Option B: Pre-configured Shell Script
+
+For models like Qwen 2.5 32B, we provide a pre-tuned shell script that handles the memory and parallelism settings automatically. This is an augmentation of verl's example script ```run_qwen2-7b_math.sh```.
+
+1.  **Copy the script** to your `verl` examples folder:
+    ```bash
+    cp ../py-inference-scheduler/integration/verl/examples/run_qwen2_5-32b_math.sh examples/grpo_trainer/
+    ```
+2.  **Submit the job**:
+    ```bash
+    ray job submit \
+        --working-dir . \
+        --submission-id "run-32b-$(date +%s)" \
+        --runtime-env runtime-env.yaml \
+        -- bash examples/grpo_trainer/run_qwen2_5-32b_math.sh
+    ```
 
 ### 7. View the results
 
@@ -196,4 +259,6 @@ Logs look as follows:
  - perf/total_num_tokens:4388173
  - perf/time_per_step:93.52434759191237
  - perf/throughput:2932.5070910595373
-```
+ ```
+
+ Key metrics to look out for are ```perf/throughput``` for sampling throughput and ```timing_s/agent_loop/slowest/generate_sequences``` for your tail latency. Addtionally, if you enable preemptions, ```timing_s/agent_loop/slowest/num_preempted``` can be useful too. 
