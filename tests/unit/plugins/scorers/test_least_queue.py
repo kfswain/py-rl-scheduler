@@ -17,6 +17,7 @@ from typing import Dict, Any
 from scheduling.framework import Endpoint, LLMRequest, CycleState
 from scheduling.plugins import LeastQueueScorer
 
+
 class TestLeastQueueScorer:
     def setup_method(self):
         self.scorer = LeastQueueScorer()
@@ -30,18 +31,18 @@ class TestLeastQueueScorer:
             "ep_mid": Endpoint(name="ep_mid", attributes={"queue_len": 15}),
             "ep_worst": Endpoint(name="ep_worst", attributes={"queue_len": 25}),
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         # Max = 25, Min = 5
         # Formula: (max_queue - queue_len) / (max_queue - min_queue)
-        
+
         # ep_best: (25 - 5) / 20 = 1.0
         assert scores["ep_best"] == 1.0
-        
+
         # ep_mid: (25 - 15) / 20 = 10/20 = 0.5
         assert scores["ep_mid"] == 0.5
-        
+
         # ep_worst: (25 - 25) / 20 = 0.0
         assert scores["ep_worst"] == 0.0
 
@@ -51,12 +52,13 @@ class TestLeastQueueScorer:
             "ep1": Endpoint(name="ep1", attributes={"queue_len": 12}),
             "ep2": Endpoint(name="ep2", attributes={"queue_len": 12}),
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         # If all are equal, everyone gets 1.0 to avoid division by zero
         assert scores["ep1"] == 1.0
         assert scores["ep2"] == 1.0
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

@@ -32,7 +32,11 @@ def test_queue_length_scorer_prefers_lower_queue():
     p2 = Endpoint(name="pod2", attributes={"waiting_queue_size": 1})
 
     scorer = QueueLengthScorer()
-    profile = SchedulerProfile(name="default").with_scorers(WeightedScorer(scorer, 1.0)).with_picker(RandomPicker())
+    profile = (
+        SchedulerProfile(name="default")
+        .with_scorers(WeightedScorer(scorer, 1.0))
+        .with_picker(RandomPicker())
+    )
     s = make_scheduler_with_profile(profile)
 
     res = s.schedule(LLMRequest(request_id="r", target_model=None), [p1, p2])

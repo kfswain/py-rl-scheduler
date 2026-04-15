@@ -15,16 +15,23 @@
 
 import pytest
 from scheduling import SchedulerConfig, Scheduler
-from scheduling.plugins import SingleProfileHandler, SimpleFilter, ConstantScorer, QueueLengthScorer, MaxScorePicker
+from scheduling.plugins import (
+    SingleProfileHandler,
+    SimpleFilter,
+    ConstantScorer,
+    QueueLengthScorer,
+    MaxScorePicker,
+)
 from scheduling.framework import SchedulerProfile, WeightedScorer
 from scheduling.framework import Endpoint, LLMRequest
 
+
 class RandomPicker:
-        def pick(self, cycle_state, request, scored_endpoints):
-            if not scored_endpoints:
-                return None
-            # pick the first scored endpoint
-            return scored_endpoints[0]
+    def pick(self, cycle_state, request, scored_endpoints):
+        if not scored_endpoints:
+            return None
+        # pick the first scored endpoint
+        return scored_endpoints[0]
 
 
 def make_scheduler_with_profile(profile: SchedulerProfile) -> Scheduler:
@@ -50,12 +57,16 @@ def test_finds_highest_score_pod():
     class MapScorer:
         def score(self, cycle_state, request, pods):
             # `pods` is a mapping name->Endpoint
-            if hasattr(pods, 'items'):
+            if hasattr(pods, "items"):
                 return {name: (2.0 if name == "pod2" else 1.0) for name in pods.keys()}
             # fallback for sequences
             return {p.name: (2.0 if p.name == "pod2" else 1.0) for p in pods}
 
-    profile = SchedulerProfile(name="default").with_scorers(WeightedScorer(MapScorer(), 1.0)).with_picker(RandomPicker())   
+    profile = (
+        SchedulerProfile(name="default")
+        .with_scorers(WeightedScorer(MapScorer(), 1.0))
+        .with_picker(RandomPicker())
+    )
     s = make_scheduler_with_profile(profile)
 
     res = s.schedule(LLMRequest(request_id="r", target_model="m"), [p1, p2])
@@ -72,7 +83,12 @@ def test_filter_removes_pods():
     p2 = Endpoint(name="pod2", attributes={"zone": "b"})
 
     f = SimpleFilter(key="zone", value="a")
-    profile = SchedulerProfile(name="default").with_filters(f).with_scorers(WeightedScorer(ConstantScorer(1.0), 1.0)).with_picker(RandomPicker())
+    profile = (
+        SchedulerProfile(name="default")
+        .with_filters(f)
+        .with_scorers(WeightedScorer(ConstantScorer(1.0), 1.0))
+        .with_picker(RandomPicker())
+    )
     s = make_scheduler_with_profile(profile)
 
     res = s.schedule(LLMRequest(request_id="r", target_model=None), [p1, p2])
@@ -81,6 +97,7 @@ def test_filter_removes_pods():
     assert len(pr.endpoint_list) == 1
     assert pr.endpoint_list[0].endpoint.name == "pod1"
 
+
 def test_filter_scorer_picker_combined():
     p1 = Endpoint(name="pod1", attributes={"zone": "a", "waiting_queue_size": 5})
     p2 = Endpoint(name="pod2", attributes={"zone": "b", "waiting_queue_size": 2})
@@ -88,7 +105,12 @@ def test_filter_scorer_picker_combined():
 
     qls = QueueLengthScorer(attribute_key="waiting_queue_size")
     f = SimpleFilter(key="zone", value="a")
-    profile = SchedulerProfile(name="default").with_filters(f).with_scorers(WeightedScorer(qls, 1.0)).with_picker((MaxScorePicker()))
+    profile = (
+        SchedulerProfile(name="default")
+        .with_filters(f)
+        .with_scorers(WeightedScorer(qls, 1.0))
+        .with_picker((MaxScorePicker()))
+    )
     s = make_scheduler_with_profile(profile)
 
     res = s.schedule(LLMRequest(request_id="r", target_model=None), [p1, p2, p3])

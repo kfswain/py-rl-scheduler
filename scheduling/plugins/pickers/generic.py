@@ -16,12 +16,12 @@ from __future__ import annotations
 import random
 from typing import Optional, Sequence
 from ...framework import (
-    PickerPlugin, 
-    Endpoint, 
-    ScoredEndpoint, 
-    CycleState, 
-    LLMRequest, 
-    register_picker
+    PickerPlugin,
+    Endpoint,
+    ScoredEndpoint,
+    CycleState,
+    LLMRequest,
+    register_picker,
 )
 
 
@@ -30,7 +30,12 @@ class RandomPicker(PickerPlugin):
     def __init__(self, max_num: int = 1) -> None:
         self.max_num = max_num
 
-    def pick(self, cycle_state: CycleState, request: LLMRequest, scored_endpoints: Sequence[ScoredEndpoint]) -> Optional[ScoredEndpoint]:
+    def pick(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        scored_endpoints: Sequence[ScoredEndpoint],
+    ) -> Optional[ScoredEndpoint]:
         if not scored_endpoints:
             return None
         top = scored_endpoints[: self.max_num]
@@ -42,7 +47,12 @@ class MaxScorePicker(PickerPlugin):
     def __init__(self, max_num: int = 1) -> None:
         self.max_num = max_num
 
-    def pick(self, cycle_state: CycleState, request: LLMRequest, scored_endpoints: Sequence[ScoredEndpoint]) -> Optional[ScoredEndpoint]:
+    def pick(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        scored_endpoints: Sequence[ScoredEndpoint],
+    ) -> Optional[ScoredEndpoint]:
         if not scored_endpoints:
             return None
         return scored_endpoints[0]

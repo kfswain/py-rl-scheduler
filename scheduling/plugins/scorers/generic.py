@@ -15,12 +15,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Sequence, Mapping
 import threading
-from ...framework import (
-    ScorerPlugin, 
-    Endpoint, 
-    LLMRequest, 
-    register_scorer
-)
+from ...framework import ScorerPlugin, Endpoint, LLMRequest, register_scorer
 
 
 @register_scorer("constant")
@@ -30,7 +25,9 @@ class ConstantScorer(ScorerPlugin):
     def __init__(self, value: float) -> None:
         self.value = value
 
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         if isinstance(endpoints, Mapping):
             return {name: float(self.value) for name in endpoints.keys()}
         return {p.name: float(self.value) for p in endpoints}
@@ -44,7 +41,9 @@ class RoundRobinScorer(ScorerPlugin):
         self._counter = 0
         self._lock = threading.Lock()
 
-    def score(self, cycle_state: Any, request: LLMRequest, pods: Mapping[str, Endpoint]) -> Dict[str, float]:
+    def score(
+        self, cycle_state: Any, request: LLMRequest, pods: Mapping[str, Endpoint]
+    ) -> Dict[str, float]:
         if not pods:
             return {}
 

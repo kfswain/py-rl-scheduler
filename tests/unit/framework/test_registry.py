@@ -18,33 +18,30 @@ from scheduling.framework import _SCORERS, _PICKERS, _PROFILE_HANDLERS
 from scheduling.plugins import WaitingQueueScorer, MaxScorePicker, SingleProfileHandler
 import scheduling.plugins
 
+
 def test_registry_populated():
     assert "waiting_queue" in _SCORERS
     assert _SCORERS["waiting_queue"] == WaitingQueueScorer
-    
+
     assert "max_score" in _PICKERS
     assert _PICKERS["max_score"] == MaxScorePicker
 
     assert "single_profile" in _PROFILE_HANDLERS
     assert _PROFILE_HANDLERS["single_profile"] == SingleProfileHandler
 
+
 def test_scheduler_config_from_dict():
     config_dict = {
-        "profile_handler": {
-            "type": "single_profile"
-        },
+        "profile_handler": {"type": "single_profile"},
         "profiles": {
             "test_profile": {
                 "scorers": [
                     {"type": "waiting_queue", "weight": 2.5},
-                    {"type": "constant", "value": 5.0}
+                    {"type": "constant", "value": 5.0},
                 ],
-                "picker": {
-                    "type": "max_score",
-                    "max_num": 3
-                }
+                "picker": {"type": "max_score", "max_num": 3},
             }
-        }
+        },
     }
 
     config = SchedulerConfig.from_dict(config_dict)
@@ -55,23 +52,20 @@ def test_scheduler_config_from_dict():
     profile = config.profiles["test_profile"]
 
     assert len(profile.scorers) == 2
-    
+
     assert isinstance(profile.scorers[0].scorer, WaitingQueueScorer)
     assert profile.scorers[0].weight == 2.5
-    
+
     assert profile.scorers[1].scorer.value == 5.0
 
     assert isinstance(profile.picker, MaxScorePicker)
     assert profile.picker.max_num == 3
 
+
 def test_scheduler_config_invalid_type():
     config_dict = {
         "profile_handler": {"type": "single_profile"},
-        "profiles": {
-            "test_profile": {
-                "scorers": [{"type": "does_not_exist"}]
-            }
-        }
+        "profiles": {"test_profile": {"scorers": [{"type": "does_not_exist"}]}},
     }
 
     with pytest.raises(ValueError, match="Unknown plugin type 'does_not_exist'"):

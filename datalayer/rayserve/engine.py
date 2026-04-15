@@ -31,17 +31,17 @@ class DirectKVCacheLogger(StatLoggerBase):
     def record(self, scheduler_stats, iteration_stats, engine_idx=0):
         if self.target_dict is not None and scheduler_stats is not None:
             self.target_dict["kv"] = getattr(scheduler_stats, "kv_cache_usage", 0.0)
-            self.target_dict["num_waiting_reqs"] = getattr(scheduler_stats, "num_waiting_reqs", 0)
-            self.target_dict["num_running_reqs"] = getattr(scheduler_stats, "num_running_reqs", 0)
+            self.target_dict["num_waiting_reqs"] = getattr(
+                scheduler_stats, "num_waiting_reqs", 0
+            )
+            self.target_dict["num_running_reqs"] = getattr(
+                scheduler_stats, "num_running_reqs", 0
+            )
 
 
 class MetricsAwareVLLMEngine(VLLMEngine):
     def _start_async_llm_engine(self, engine_args, engine_config, pg):
-        self.live_metrics = {
-            "kv": 0.0,
-            "num_waiting_reqs": 0,
-            "num_running_reqs": 0
-        }
+        self.live_metrics = {"kv": 0.0, "num_waiting_reqs": 0, "num_running_reqs": 0}
 
         # vLLM expects a StatLoggerFactory (a Callable that returns the Logger) - we create a closure that instantiates the logger and attaches our dict
         def logger_factory(vllm_config, engine_idx=0):
@@ -61,7 +61,7 @@ class MetricsAwareVLLMEngine(VLLMEngine):
             vllm_config=engine_config,
             executor_class=executor_class,
             log_stats=not engine_args.disable_log_stats,
-            stat_loggers=[logger_factory]
+            stat_loggers=[logger_factory],
         )
 
     def record_routing_stats(self):
@@ -69,7 +69,7 @@ class MetricsAwareVLLMEngine(VLLMEngine):
         return {
             "kv": self.live_metrics.get("kv", 0.0),
             "num_waiting_reqs": self.live_metrics.get("num_waiting_reqs", 0),
-            "num_running_reqs": self.live_metrics.get("num_running_reqs", 0)
+            "num_running_reqs": self.live_metrics.get("num_running_reqs", 0),
         }
 
 

@@ -15,15 +15,15 @@
 from __future__ import annotations
 from typing import Any, Dict, Optional, Sequence, Mapping
 from ...framework import (
-    FilterPlugin, 
-    ProfileHandler, 
+    FilterPlugin,
+    ProfileHandler,
     SchedulerProfile,
-    Endpoint, 
-    CycleState, 
-    LLMRequest, 
+    Endpoint,
+    CycleState,
+    LLMRequest,
     ProfileRunResult,
     register_filter,
-    register_profile_handler
+    register_profile_handler,
 )
 
 
@@ -35,7 +35,12 @@ class SimpleFilter(FilterPlugin):
         self.key = key
         self.value = value
 
-    def filter(self, cycle_state: CycleState, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Mapping[str, Endpoint]:
+    def filter(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        endpoints: Sequence[Endpoint],
+    ) -> Mapping[str, Endpoint]:
         if isinstance(endpoints, Mapping):
             result: Dict[str, Endpoint] = {}
             for name, p in endpoints.items():
@@ -56,10 +61,21 @@ class SimpleFilter(FilterPlugin):
 class SingleProfileHandler(ProfileHandler):
     """Simple profile handler that runs all profiles and returns the first as primary."""
 
-    def pick(self, cycle_state: CycleState, request: LLMRequest, profiles: Dict[str, SchedulerProfile], profile_results: Dict[str, Optional[ProfileRunResult]]) -> Dict[str, SchedulerProfile]:
+    def pick(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        profiles: Dict[str, SchedulerProfile],
+        profile_results: Dict[str, Optional[ProfileRunResult]],
+    ) -> Dict[str, SchedulerProfile]:
         return profiles.copy()
 
-    def process_results(self, cycle_state: CycleState, request: LLMRequest, profile_results: Dict[str, Optional[ProfileRunResult]]) -> Optional[str]:
+    def process_results(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        profile_results: Dict[str, Optional[ProfileRunResult]],
+    ) -> Optional[str]:
         for name, res in profile_results.items():
             if res is not None and res.endpoint_list:
                 return name

@@ -17,6 +17,7 @@ import concurrent.futures
 from scheduling.plugins import RoundRobinScorer
 from scheduling.framework import Endpoint, CycleState, LLMRequest
 
+
 def test_round_robin_cycling():
     scorer = RoundRobinScorer()
     pods = {
@@ -32,17 +33,29 @@ def test_round_robin_cycling():
             scores = scorer.score(state, request, pods)
             assert scores == {expected: 1.0}
 
+
 def test_round_robin_scaling():
     scorer = RoundRobinScorer()
     request = LLMRequest(request_id="test")
     state = CycleState()
 
-    scores1 = scorer.score(state, request, {"ep1": Endpoint(name="ep1"), "ep2": Endpoint(name="ep2")})
+    scores1 = scorer.score(
+        state, request, {"ep1": Endpoint(name="ep1"), "ep2": Endpoint(name="ep2")}
+    )
     assert scores1 == {"ep1": 1.0}
 
     # index doesn't change when number of pods change
-    scores2 = scorer.score(state, request, {"ep1": Endpoint(name="ep1"), "ep2": Endpoint(name="ep2"), "ep3": Endpoint(name="ep3")})
+    scores2 = scorer.score(
+        state,
+        request,
+        {
+            "ep1": Endpoint(name="ep1"),
+            "ep2": Endpoint(name="ep2"),
+            "ep3": Endpoint(name="ep3"),
+        },
+    )
     assert scores2 == {"ep2": 1.0}
+
 
 def test_round_robin_concurrency():
     scorer = RoundRobinScorer()
@@ -52,7 +65,10 @@ def test_round_robin_concurrency():
 
     num_threads = 20
     with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-        futures = [executor.submit(scorer.score, state, request, pods) for _ in range(num_threads)]
+        futures = [
+            executor.submit(scorer.score, state, request, pods)
+            for _ in range(num_threads)
+        ]
         results = [f.result() for f in futures]
 
     # With 20 requests and 10 pods, each pod should be selected exactly twice
@@ -64,6 +80,7 @@ def test_round_robin_concurrency():
 
     for i in range(10):
         assert selection_counts[f"ep{i}"] == 2
+
 
 def test_round_robin_empty_endpoints():
     scorer = RoundRobinScorer()
