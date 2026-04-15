@@ -12,5 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .scheduler import Scheduler
-from .config import SchedulerConfig
+from .scheduler import Scheduler as Scheduler
+from .config import SchedulerConfig as SchedulerConfig

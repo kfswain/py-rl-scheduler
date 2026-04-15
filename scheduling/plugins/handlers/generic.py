@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from __future__ import annotations
-from typing import Any, Dict, Optional, Sequence, Mapping
+from typing import Any, Dict, List, Optional, Sequence, Mapping
 from ...framework import (
     FilterPlugin,
     ProfileHandler,

@@ -18,15 +18,23 @@ from scheduling.framework import (
     LLMRequest,
 )
 from scheduling.core.scheduler import Scheduler
-from typing import Optional
+from typing import Optional, List, Callable
 import asyncio
 import random
 import time
 
+from ray import serve
+from ray.serve.llm import LLMConfig
+from datalayer.rayserve.engine import MetricsAwareLLMServer
+from ray.llm._internal.serve.core.ingress.builder import (
+    LLMServingArgs,
+    make_fastapi_ingress,
+)
+from ray.llm._internal.serve.core.server.builder import build_llm_deployment
+
 from ray.serve.request_router import (
     PendingRequest,
     RequestRouter,
-    ReplicaID,
     ReplicaResult,
     RunningReplica,
 )
@@ -37,7 +45,7 @@ from ray.serve._private.common import (
     ReplicaID,
     RunningReplicaInfo,
 )
-from typing import List, Callable
+
 
 
 class IGWRouter(RequestRouter):
@@ -171,14 +179,6 @@ class IGWRouter(RequestRouter):
 
 
 # defining an IGW-like scheduler
-from scheduling import Scheduler
-
-from datalayer.rayserve.engine import MetricsAwareLLMServer
-from ray.llm._internal.serve.core.ingress.builder import (
-    LLMServingArgs,
-    make_fastapi_ingress,
-)
-from ray.llm._internal.serve.core.server.builder import build_llm_deployment
 
 
 def build_custom_openai_app(builder_config: dict):
@@ -200,9 +200,6 @@ def build_custom_openai_app(builder_config: dict):
 
 
 # Hooking into Ray Serve's Request Router
-
-from ray import serve
-from ray.serve.llm import LLMConfig
 
 llm_config = LLMConfig(
     model_loading_config=dict(

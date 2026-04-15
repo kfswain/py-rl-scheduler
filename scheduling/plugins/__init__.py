@@ -13,19 +13,19 @@
 # limitations under the License.
 
 # Import sub-modules to trigger registration side-effects
-from .scorers import prefix_plugin, backpressure, generic as generic_scorers
-from .pickers import generic as generic_pickers
-from .handlers import generic as generic_handlers
+from .scorers import prefix_plugin as prefix_plugin, backpressure as backpressure, generic as generic_scorers  # noqa: F401
+from .pickers import generic as generic_pickers  # noqa: F401
+from .handlers import generic as generic_handlers  # noqa: F401
 
 # Re-export key plugins if needed, but registry handles dynamic lookup
-from .scorers.prefix_plugin import PrefixCacheScorer
+from .scorers.prefix_plugin import PrefixCacheScorer as PrefixCacheScorer
 from .scorers.backpressure import (
-    WaitingQueueScorer,
-    RunningQueueScorer,
-    KVCacheScorer,
-    LeastQueueScorer,
-    QueueLengthScorer,
+    WaitingQueueScorer as WaitingQueueScorer,
+    RunningQueueScorer as RunningQueueScorer,
+    KVCacheScorer as KVCacheScorer,
+    LeastQueueScorer as LeastQueueScorer,
+    QueueLengthScorer as QueueLengthScorer,
 )
-from .scorers.generic import RoundRobinScorer, ConstantScorer
-from .pickers.generic import RandomPicker, MaxScorePicker
-from .handlers.generic import SingleProfileHandler, SimpleFilter
+from .scorers.generic import RoundRobinScorer as RoundRobinScorer, ConstantScorer as ConstantScorer
+from .pickers.generic import RandomPicker as RandomPicker, MaxScorePicker as MaxScorePicker
+from .handlers.generic import SingleProfileHandler as SingleProfileHandler, SimpleFilter as SimpleFilter
