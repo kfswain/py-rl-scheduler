@@ -15,24 +15,26 @@
 from __future__ import annotations
 from typing import Any, Dict, Sequence, Mapping
 from ...framework import (
-    ScorerPlugin, 
-    Endpoint, 
-    LLMRequest, 
+    ScorerPlugin,
+    Endpoint,
+    LLMRequest,
     score_by_metric,
-    register_scorer
+    register_scorer,
 )
 
 
 @register_scorer("queue_length")
 class QueueLengthScorer(ScorerPlugin):
     """Scores endpoints based on a 'waiting_queue_size' attribute.
-    Lower queue size is better. 
+    Lower queue size is better.
     """
 
     def __init__(self, attribute_key: str = "waiting_queue_size") -> None:
         self.attribute_key = attribute_key
 
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         if isinstance(endpoints, Mapping):
             result: Dict[str, float] = {}
             for name, ep in endpoints.items():
@@ -44,48 +46,69 @@ class QueueLengthScorer(ScorerPlugin):
                 result[name] = float(-size)
             return result
 
-        return {ep.name: float(-int(ep.attributes.get(self.attribute_key, 0))) for ep in endpoints}
+        return {
+            ep.name: float(-int(ep.attributes.get(self.attribute_key, 0)))
+            for ep in endpoints
+        }
 
 
 @register_scorer("least_queue")
 class LeastQueueScorer(ScorerPlugin):
     """Scores endpoints based on their real-time Ray Serve actor queue length."""
 
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         return score_by_metric(
             endpoints,
             metric_extractor=lambda ep: float(ep.attributes.get("queue_len", 0)),
-            lower_is_better=True
+            lower_is_better=True,
         )
+
 
 @register_scorer("waiting_queue")
 class WaitingQueueScorer(ScorerPlugin):
     """Scores candidate endpoints based on the number of waiting requests inside the vLLM engine."""
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         return score_by_metric(
             endpoints,
-            metric_extractor=lambda ep: float(ep.attributes.get("routing_stats", {}).get("num_waiting_reqs", 0)),
-            lower_is_better=True
+            metric_extractor=lambda ep: float(
+                ep.attributes.get("routing_stats", {}).get("num_waiting_reqs", 0)
+            ),
+            lower_is_better=True,
         )
 
 
 @register_scorer("running_queue")
 class RunningQueueScorer(ScorerPlugin):
     """Scores candidate endpoints based on the number of running requests inside the vLLM engine."""
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         return score_by_metric(
             endpoints,
-            metric_extractor=lambda ep: float(ep.attributes.get("routing_stats", {}).get("num_running_reqs", 0)),
-            lower_is_better=True
+            metric_extractor=lambda ep: float(
+                ep.attributes.get("routing_stats", {}).get("num_running_reqs", 0)
+            ),
+            lower_is_better=True,
         )
 
 
 @register_scorer("kv_cache")
 class KVCacheScorer(ScorerPlugin):
     """Scores candidate endpoints based on KV cache utilization."""
-    def score(self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+
+    def score(
+        self, cycle_state: Any, request: LLMRequest, endpoints: Sequence[Endpoint]
+    ) -> Dict[str, float]:
         return score_by_metric(
             endpoints,
-            metric_extractor=lambda ep: float(ep.attributes.get("routing_stats", {}).get("kv", 0.0)),
-            lower_is_better=True
+            metric_extractor=lambda ep: float(
+                ep.attributes.get("routing_stats", {}).get("kv", 0.0)
+            ),
+            lower_is_better=True,
         )

@@ -34,7 +34,12 @@ from .framework import (
 )
 from .plugins.scorers.prefix_plugin import PrefixCacheScorer
 from .plugins.scorers.generic import RoundRobinScorer
-from .plugins import LeastQueueScorer, WaitingQueueScorer, RunningQueueScorer, KVCacheScorer
+from .plugins import (
+    LeastQueueScorer,
+    WaitingQueueScorer,
+    RunningQueueScorer,
+    KVCacheScorer,
+)
 
 __all__ = [
     "Scheduler",

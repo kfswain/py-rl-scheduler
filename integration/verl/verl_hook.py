@@ -15,7 +15,6 @@
 import asyncio
 import logging
 import ray
-import os
 import uuid
 from typing import Dict, List, Any, Optional, Tuple
 from omegaconf import DictConfig
@@ -23,7 +22,7 @@ from omegaconf import DictConfig
 from verl.experimental.agent_loop.agent_loop import (
     AsyncLLMServerManager,
     AgentLoopWorker,
-    AgentLoopManager
+    AgentLoopManager,
 )
 
 from scheduling.framework import LLMRequest, Endpoint
@@ -160,13 +159,17 @@ class InferenceSchedulerServerManager(AsyncLLMServerManager):
     async def _acquire_server(self, request_id: str, prompt_ids: Optional[List[int]] = None) -> Tuple[str, ray.actor.ActorHandle]:
         """Overrides Verl's Native Global Load Balancer with py-inference-scheduler logic"""
         if self._metrics_task is None:
-            self._metrics_task = asyncio.create_task(verl_metrics_polling_loop(self.endpoints, self.inflight_store))
+            self._metrics_task = asyncio.create_task(
+                verl_metrics_polling_loop(self.endpoints, self.inflight_store)
+            )
 
         for ep in self.endpoints:
             ep.attributes["queue_len"] = self.inflight_store.get(ep.name)
 
         req = LLMRequest(request_id=request_id, body=prompt_ids)
-        selected_endpoints = self.ray_request_scheduler.run(req, candidates=self.endpoints)
+        selected_endpoints = self.ray_request_scheduler.run(
+            req, candidates=self.endpoints
+        )
 
         # fall back to verl LB
         if not selected_endpoints:
@@ -247,6 +250,7 @@ class PyInferenceAgentLoopManager(AgentLoopManager):
     The main hook entrypoint loaded by ray_trainer.py
     Overrides the worker actor class that verl spawns across the cluster.
     """
+
     def __init__(self, *args, **kwargs):
         self.agent_loop_workers_class = ray.remote(PyInferenceAgentLoopWorker)
         super().__init__(*args, **kwargs)

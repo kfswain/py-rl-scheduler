@@ -14,31 +14,46 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Mapping
+from typing import Dict, List, Optional, Protocol, Sequence, Mapping
 from .types import Endpoint, ScoredEndpoint, CycleState, LLMRequest, ProfileRunResult
 
 
 class FilterPlugin(Protocol):
-    def filter(self, cycle_state: CycleState, request: LLMRequest, pods: Mapping[str, Endpoint]) -> Mapping[str, Endpoint]:
-        ...
+    def filter(
+        self, cycle_state: CycleState, request: LLMRequest, pods: Mapping[str, Endpoint]
+    ) -> Mapping[str, Endpoint]: ...
 
 
 class ScorerPlugin(Protocol):
-    def score(self, cycle_state: CycleState, request: LLMRequest, pods: Mapping[str, Endpoint]) -> Dict[str, float]:
-        ...
+    def score(
+        self, cycle_state: CycleState, request: LLMRequest, pods: Mapping[str, Endpoint]
+    ) -> Dict[str, float]: ...
 
 
 class PickerPlugin(Protocol):
-    def pick(self, cycle_state: CycleState, request: LLMRequest, scored_pods: Sequence[ScoredEndpoint]) -> Optional[ScoredEndpoint]:
-        ...
+    def pick(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        scored_pods: Sequence[ScoredEndpoint],
+    ) -> Optional[ScoredEndpoint]: ...
 
 
 class ProfileHandler(Protocol):
-    def pick(self, cycle_state: CycleState, request: LLMRequest, profiles: Dict[str, "SchedulerProfile"], profile_results: Dict[str, Optional[ProfileRunResult]]) -> Dict[str, "SchedulerProfile"]:
-        ...
+    def pick(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        profiles: Dict[str, "SchedulerProfile"],
+        profile_results: Dict[str, Optional[ProfileRunResult]],
+    ) -> Dict[str, "SchedulerProfile"]: ...
 
-    def process_results(self, cycle_state: CycleState, request: LLMRequest, profile_results: Dict[str, Optional[ProfileRunResult]]) -> Optional[str]:
-        ...
+    def process_results(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        profile_results: Dict[str, Optional[ProfileRunResult]],
+    ) -> Optional[str]: ...
 
 
 @dataclass
@@ -66,7 +81,12 @@ class SchedulerProfile:
         self.picker = p
         return self
 
-    def run(self, request: LLMRequest, cycle_state: CycleState, candidates: Sequence[Endpoint]) -> ProfileRunResult:
+    def run(
+        self,
+        request: LLMRequest,
+        cycle_state: CycleState,
+        candidates: Sequence[Endpoint],
+    ) -> ProfileRunResult:
         # normalize candidates into a mapping name->Endpoint
         endpoints_map: Dict[str, Endpoint] = {e.name: e for e in candidates}
 
@@ -99,7 +119,12 @@ class SchedulerProfile:
                         total_scores[name] += 1.0 * w.weight
 
         # create ScoredEndpoint list preserving endpoint info
-        scored = [ScoredEndpoint(endpoint=endpoints_map[name], score=total_scores.get(name, 0.0)) for name in endpoints_map.keys()]
+        scored = [
+            ScoredEndpoint(
+                endpoint=endpoints_map[name], score=total_scores.get(name, 0.0)
+            )
+            for name in endpoints_map.keys()
+        ]
         # sort descending
         scored.sort(key=lambda sp: sp.score, reverse=True)
 

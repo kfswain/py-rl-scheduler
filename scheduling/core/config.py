@@ -15,13 +15,13 @@
 from dataclasses import dataclass
 from typing import Dict, Any
 from ..framework import (
-    ProfileHandler, 
-    SchedulerProfile, 
+    ProfileHandler,
+    SchedulerProfile,
     WeightedScorer,
-    build_profile_handler, 
-    build_scorer, 
-    build_picker, 
-    build_filter
+    build_profile_handler,
+    build_scorer,
+    build_picker,
+    build_filter,
 )
 
 
@@ -36,7 +36,7 @@ class SchedulerConfig:
     @classmethod
     def from_dict(cls, config_dict: Dict[str, Any]) -> "SchedulerConfig":
         """
-        Parses a nested dictionary (e.g. from YAML or JSON - sticking to YAML for now but the code works for both) into a full 
+        Parses a nested dictionary (e.g. from YAML or JSON - sticking to YAML for now but the code works for both) into a full
         SchedulerConfig object containing instantiated Scorer, Picker, and Filter plugins.
         """
         if not config_dict:
@@ -44,14 +44,18 @@ class SchedulerConfig:
 
         ph_config = config_dict.get("profile_handler")
         if not ph_config or "type" not in ph_config:
-            raise ValueError("Scheduler configuration must include a 'profile_handler' dictionary with a 'type' key.")
-        
+            raise ValueError(
+                "Scheduler configuration must include a 'profile_handler' dictionary with a 'type' key."
+            )
+
         ph_type = ph_config.pop("type")
         profile_handler = build_profile_handler(ph_type, **ph_config)
 
         profiles_dict = config_dict.get("profiles")
         if not profiles_dict:
-            raise ValueError("Scheduler configuration must include a 'profiles' dictionary.")
+            raise ValueError(
+                "Scheduler configuration must include a 'profiles' dictionary."
+            )
 
         parsed_profiles: Dict[str, SchedulerProfile] = {}
         for profile_name, prof_data in profiles_dict.items():
@@ -68,7 +72,9 @@ class SchedulerConfig:
                 s_type = cfg.pop("type")
                 weight = cfg.pop("weight", 1.0)
                 s_instance = build_scorer(s_type, **cfg)
-                profile.with_scorers(WeightedScorer(scorer=s_instance, weight=float(weight)))
+                profile.with_scorers(
+                    WeightedScorer(scorer=s_instance, weight=float(weight))
+                )
 
             picker_config = prof_data.get("picker")
             if picker_config:

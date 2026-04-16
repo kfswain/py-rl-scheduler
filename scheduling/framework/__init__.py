@@ -12,10 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .interface import *
-from .types import *
-from .registry import *
-from .helpers import *
-
-# Explicitly export internal registries for tests/advanced inspection
-from .registry import _SCORERS, _PICKERS, _FILTERS, _PROFILE_HANDLERS
+from .interface import (
+    FilterPlugin as FilterPlugin,
+    ScorerPlugin as ScorerPlugin,
+    PickerPlugin as PickerPlugin,
+    ProfileHandler as ProfileHandler,
+    WeightedScorer as WeightedScorer,
+    SchedulerProfile as SchedulerProfile,
+)
+from .types import (
+    LLMRequest as LLMRequest,
+    Endpoint as Endpoint,
+    ScoredEndpoint as ScoredEndpoint,
+    ProfileRunResult as ProfileRunResult,
+    SchedulingResult as SchedulingResult,
+    CycleState as CycleState,
+)
+from .registry import (
+    register_scorer as register_scorer,
+    register_picker as register_picker,
+    register_filter as register_filter,
+    register_profile_handler as register_profile_handler,
+    build_scorer as build_scorer,
+    build_picker as build_picker,
+    build_filter as build_filter,
+    build_profile_handler as build_profile_handler,
+    build_plugin as build_plugin,
+    _SCORERS as _SCORERS,
+    _PICKERS as _PICKERS,
+    _FILTERS as _FILTERS,
+    _PROFILE_HANDLERS as _PROFILE_HANDLERS,
+)
+from .helpers import score_by_metric as score_by_metric

@@ -16,14 +16,15 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Mapping
 from ...framework import Endpoint, CycleState, LLMRequest, register_scorer
 import hashlib
 import json
-from collections import OrderedDict 
+from collections import OrderedDict
+
 
 class PrefixIndexer:
     """Simple in-memory indexer: maps block-hash -> set of server names.
     Also keep server -> set(hashes) for efficient removal.
     """
 
-    def __init__(self, lru_capacity_per_server = 31250) -> None:
+    def __init__(self, lru_capacity_per_server=31250) -> None:
         self._hash_to_servers: Dict[int, Set[str]] = {}
         self._server_to_hashes: Dict[str, OrderedDict[int]] = {}
         self._lru_capacity_per_server = lru_capacity_per_server
@@ -36,7 +37,7 @@ class PrefixIndexer:
                 self._hash_to_servers[h] = set()
             self._hash_to_servers[h].add(server)
             self._server_to_hashes[server][h] = None
-       
+
         # Evict oldest entries
         while len(self._server_to_hashes[server]) > self._lru_capacity_per_server:
             old_h, _ = self._server_to_hashes[server].popitem(last=False)
@@ -45,7 +46,6 @@ class PrefixIndexer:
                 servs.discard(server)
                 if not servs:
                     self._hash_to_servers.pop(old_h, None)
-        
 
     def get(self, h: int) -> Set[str]:
         return set(self._hash_to_servers.get(h, set()))
@@ -79,7 +79,12 @@ def _get_user_input_bytes(body: Any) -> Optional[bytes]:
         return None
 
 
-def _hash_prompt_bytes(target_model: Optional[str], body_bytes: bytes, block_size: int, max_prefix_blocks: int) -> List[int]:
+def _hash_prompt_bytes(
+    target_model: Optional[str],
+    body_bytes: bytes,
+    block_size: int,
+    max_prefix_blocks: int,
+) -> List[int]:
     if body_bytes is None:
         return []
     if len(body_bytes) < block_size:
@@ -116,12 +121,22 @@ class PrefixCacheScorer:
     returned score is in [0,1].
     """
 
-    def __init__(self, block_size: int = 64, max_prefix_blocks: int = 256, lru_capacity_per_server = 31250) -> None:
+    def __init__(
+        self,
+        block_size: int = 64,
+        max_prefix_blocks: int = 256,
+        lru_capacity_per_server=31250,
+    ) -> None:
         self.block_size = block_size
         self.max_prefix_blocks = max_prefix_blocks
         self.indexer = PrefixIndexer()
 
-    def score(self, cycle_state: CycleState, request: LLMRequest, endpoints: Sequence[Endpoint]) -> Dict[str, float]:
+    def score(
+        self,
+        cycle_state: CycleState,
+        request: LLMRequest,
+        endpoints: Sequence[Endpoint],
+    ) -> Dict[str, float]:
         # normalize endpoints to mapping name->Endpoint
         if isinstance(endpoints, Mapping):
             eps = endpoints
@@ -129,7 +144,12 @@ class PrefixCacheScorer:
             eps = {e.name: e for e in endpoints}
 
         body_bytes = _get_user_input_bytes(request.body)
-        hashes = _hash_prompt_bytes(request.target_model, body_bytes or b"", self.block_size, self.max_prefix_blocks)
+        hashes = _hash_prompt_bytes(
+            request.target_model,
+            body_bytes or b"",
+            self.block_size,
+            self.max_prefix_blocks,
+        )
         # store in cycle_state for potential use elsewhere
         cycle_state.set("prefix_hashes", hashes)
 
@@ -147,10 +167,15 @@ class PrefixCacheScorer:
                     scores[name] = 1.0
                 else:
                     scores[name] += 1
-        
+
         # in the event of a novel prompt with no matching prefixes, route to the smallest loaded server(s)
         if len(scores) == 0:
-            min_count = min([ len(self.indexer._server_to_hashes.get(name, {})) for name in eps.keys() ])
+            min_count = min(
+                [
+                    len(self.indexer._server_to_hashes.get(name, {}))
+                    for name in eps.keys()
+                ]
+            )
             for name in eps.keys():
                 if len(self.indexer._server_to_hashes.get(name, {})) == min_count:
                     scores[name] = 1.0
@@ -160,14 +185,21 @@ class PrefixCacheScorer:
 
         return scores
 
-    def pre_request(self, cycle_state: CycleState, request: LLMRequest, selected_endpoint: Endpoint) -> None:
+    def pre_request(
+        self, cycle_state: CycleState, request: LLMRequest, selected_endpoint: Endpoint
+    ) -> None:
         hashes = cycle_state.get("prefix_hashes")
         if hashes is not None:
             self.add_prefixes_for_server(selected_endpoint.name, hashes)
         else:
             print("Warning: prefix_hashes not found in cycle_state in pre_request")
             body_bytes = _get_user_input_bytes(request.body)
-            hashes = _hash_prompt_bytes(request.target_model, body_bytes or b"", self.block_size, self.max_prefix_blocks)
+            hashes = _hash_prompt_bytes(
+                request.target_model,
+                body_bytes or b"",
+                self.block_size,
+                self.max_prefix_blocks,
+            )
             self.add_prefixes_for_server(selected_endpoint.name, hashes)
 
     # Helper to simulate the PreRequest behaviour in the upstream plugin.
@@ -176,4 +208,3 @@ class PrefixCacheScorer:
 
     def remove_server(self, server_name: str) -> None:
         self.indexer.remove_server(server_name)
-

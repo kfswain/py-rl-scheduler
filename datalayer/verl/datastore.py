@@ -13,7 +13,6 @@
 # limitations under the License.
 
 
-import time
 import threading
 import logging
 from typing import Dict
@@ -37,12 +36,14 @@ class InflightStore:
             if self._inflight.get(endpoint_name, 0) > 0:
                 self._inflight[endpoint_name] -= 1
             else:
-                logger.warning(f"Attempted to decrement inflight store for {endpoint_name} but it is already 0.")
+                logger.warning(
+                    f"Attempted to decrement inflight store for {endpoint_name} but it is already 0."
+                )
 
     def get(self, endpoint_name: str) -> int:
         """Retrieves the active, uncompleted request count for this endpoint."""
         with self._lock:
-             return self._inflight.get(endpoint_name, 0)
+            return self._inflight.get(endpoint_name, 0)
 
     def get_all(self) -> Dict[str, int]:
         """Provides a snapshot of the entire active cluster load."""

@@ -14,9 +14,9 @@
 
 
 import pytest
-from typing import Dict, Any
 from scheduling.framework import Endpoint, LLMRequest, CycleState
 from scheduling.plugins import KVCacheScorer
+
 
 class TestKVCacheScorer:
     def setup_method(self):
@@ -28,21 +28,27 @@ class TestKVCacheScorer:
         """Test relative scoring logic for KV cache usage."""
         # Using relative logic: Score = (max - cur) / (max - min)
         endpoints = {
-            "ep1": Endpoint(name="ep1", attributes={"routing_stats": {"kv": 0.2}}), # 20%
-            "ep2": Endpoint(name="ep2", attributes={"routing_stats": {"kv": 0.5}}), # 50%
-            "ep3": Endpoint(name="ep3", attributes={"routing_stats": {"kv": 0.8}}), # 80%
+            "ep1": Endpoint(
+                name="ep1", attributes={"routing_stats": {"kv": 0.2}}
+            ),  # 20%
+            "ep2": Endpoint(
+                name="ep2", attributes={"routing_stats": {"kv": 0.5}}
+            ),  # 50%
+            "ep3": Endpoint(
+                name="ep3", attributes={"routing_stats": {"kv": 0.8}}
+            ),  # 80%
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         # Min = 0.2, Max = 0.8. Range = 0.6
-        
+
         # ep1: (0.8 - 0.2) / 0.6 = 1.0
         assert scores["ep1"] == 1.0
-        
+
         # ep2: (0.8 - 0.5) / 0.6 = 0.3 / 0.6 = 0.5
         assert scores["ep2"] == 0.5
-        
+
         # ep3: (0.8 - 0.8) / 0.6 = 0.0
         assert scores["ep3"] == 0.0
 
@@ -52,21 +58,21 @@ class TestKVCacheScorer:
             "ep1": Endpoint(name="ep1", attributes={"routing_stats": {"kv": 0.5}}),
             "ep2": Endpoint(name="ep2", attributes={"routing_stats": {"kv": 0.5}}),
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         assert scores["ep1"] == 1.0
         assert scores["ep2"] == 1.0
 
     def test_score_missing_stats(self):
         """Test with missing KV stats (default 0.0)."""
         endpoints = {
-            "ep1": Endpoint(name="ep1", attributes={}), # Defaults to 0.0 usage
+            "ep1": Endpoint(name="ep1", attributes={}),  # Defaults to 0.0 usage
             "ep2": Endpoint(name="ep2", attributes={"routing_stats": {"kv": 0.5}}),
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         # Min = 0.0, Max = 0.5
         # ep1: (0.5 - 0.0) / 0.5 = 1.0
         assert scores["ep1"] == 1.0
@@ -76,12 +82,14 @@ class TestKVCacheScorer:
     def test_score_clamping(self):
         """Confirm that extremely high values don't break logic (though physically impossible)."""
         endpoints = {
-            "ep1": Endpoint(name="ep1", attributes={"routing_stats": {"kv": 1.2}}), # 120% utilized??
+            "ep1": Endpoint(
+                name="ep1", attributes={"routing_stats": {"kv": 1.2}}
+            ),  # 120% utilized??
             "ep2": Endpoint(name="ep2", attributes={"routing_stats": {"kv": 0.2}}),
         }
-        
+
         scores = self.scorer.score(self.cycle_state, self.request, endpoints)
-        
+
         # Min = 0.2, Max = 1.2. Range = 1.0
         # ep1: (1.2 - 1.2) / 1.0 = 0.0
         assert scores["ep1"] == 0.0

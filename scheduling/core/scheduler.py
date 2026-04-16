@@ -16,13 +16,12 @@ import os
 import yaml
 from typing import Dict, Optional, Sequence
 from ..framework import (
-    LLMRequest, 
-    Endpoint, 
-    SchedulingResult, 
-    CycleState, 
+    LLMRequest,
+    Endpoint,
+    SchedulingResult,
+    CycleState,
     ProfileRunResult,
-    ProfileHandler,
-    ScoredEndpoint
+    ScoredEndpoint,
 )
 from .config import SchedulerConfig
 
@@ -34,7 +33,9 @@ class Scheduler:
         else:
             self.config_path = os.environ.get("ROUTER_CONFIG_PATH")
             if not self.config_path:
-                raise ValueError("ROUTER_CONFIG_PATH environment variable is missing and no config_path provided. Ensure the ConfigMap is mounted or path is passed.")
+                raise ValueError(
+                    "ROUTER_CONFIG_PATH environment variable is missing and no config_path provided. Ensure the ConfigMap is mounted or path is passed."
+                )
 
         self.last_mtime = 0
         self._maybe_reload_config()
@@ -63,7 +64,9 @@ class Scheduler:
             self.profiles = config.profiles
             self.last_mtime = mtime
 
-    def schedule(self, request: LLMRequest, candidates: Sequence[Endpoint]) -> SchedulingResult:
+    def schedule(
+        self, request: LLMRequest, candidates: Sequence[Endpoint]
+    ) -> SchedulingResult:
         if not candidates:
             raise ValueError("no scheduling candidates provided")
 
@@ -71,7 +74,9 @@ class Scheduler:
         profile_results: Dict[str, Optional[ProfileRunResult]] = {}
 
         # ask profile handler which profiles to run
-        selected = self.profile_handler.pick(cycle_state, request, self.profiles, profile_results)
+        selected = self.profile_handler.pick(
+            cycle_state, request, self.profiles, profile_results
+        )
         assert selected is not None
 
         for name, profile in selected.items():
@@ -83,11 +88,22 @@ class Scheduler:
                 print(repr(e))
                 profile_results[name] = None
 
-        primary = self.profile_handler.process_results(cycle_state, request, profile_results)
+        primary = self.profile_handler.process_results(
+            cycle_state, request, profile_results
+        )
 
         # Build SchedulingResult
-        result = SchedulingResult(profile_results={k: v or ProfileRunResult() for k, v in profile_results.items()}, primary_profile_name=primary)
-        selected_eps = result.profile_results[primary].endpoint_list[:1] if primary in result.profile_results else []
+        result = SchedulingResult(
+            profile_results={
+                k: v or ProfileRunResult() for k, v in profile_results.items()
+            },
+            primary_profile_name=primary,
+        )
+        selected_eps = (
+            result.profile_results[primary].endpoint_list[:1]
+            if primary in result.profile_results
+            else []
+        )
         print(f"Selected endpoint {selected_eps}")
         if selected_eps:
             for w in self.profiles[primary].scorers:
@@ -95,7 +111,9 @@ class Scheduler:
                     w.scorer.pre_request(cycle_state, request, selected_eps[0].endpoint)
         return result
 
-    def run(self, request: LLMRequest, candidates: Sequence[Endpoint]) -> Sequence[ScoredEndpoint]:
+    def run(
+        self, request: LLMRequest, candidates: Sequence[Endpoint]
+    ) -> Sequence[ScoredEndpoint]:
         self._maybe_reload_config()
         scheduler_output = self.schedule(request, candidates)
         profile_name = scheduler_output.primary_profile_name
