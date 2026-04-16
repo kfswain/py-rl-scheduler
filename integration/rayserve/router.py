@@ -177,10 +177,6 @@ class IGWRouter(RequestRouter):
         print("on_request_routed callback is called")
 
 
-# defining an IGW-like scheduler
-
-
-
 def build_custom_openai_app(builder_config: dict):
     # Same internal logic as build_openai_app, but we map our deployment_cls
     builder_config = LLMServingArgs.model_validate(builder_config)
