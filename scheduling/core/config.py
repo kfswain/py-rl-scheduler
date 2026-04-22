@@ -12,10 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
 from typing import Dict, Any
 from ..framework import (
-    ProfileHandler,
     SchedulerProfile,
     WeightedScorer,
     build_profile_handler,
@@ -23,21 +21,17 @@ from ..framework import (
     build_picker,
     build_filter,
 )
+from .._scheduling import RustSchedulerConfig
 
 
-@dataclass
-class SchedulerConfig:
-    profile_handler: ProfileHandler
-    profiles: Dict[str, SchedulerProfile]
-
+class SchedulerConfig(RustSchedulerConfig):
     def __str__(self) -> str:
         return f"{{ProfileHandler: {type(self.profile_handler).__name__}, Profiles: {list(self.profiles.keys())}}}"
 
     @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> "SchedulerConfig":
+    def from_dict(cls, config_dict: Dict[str, Any]) -> RustSchedulerConfig:
         """
-        Parses a nested dictionary (e.g. from YAML or JSON - sticking to YAML for now but the code works for both) into a full
-        SchedulerConfig object containing instantiated Scorer, Picker, and Filter plugins.
+        Parses a nested dictionary into a Rust SchedulerConfig object.
         """
         if not config_dict:
             raise ValueError("Provided configuration dictionary is empty.")
@@ -48,6 +42,7 @@ class SchedulerConfig:
                 "Scheduler configuration must include a 'profile_handler' dictionary with a 'type' key."
             )
 
+        ph_config = dict(ph_config)
         ph_type = ph_config.pop("type")
         profile_handler = build_profile_handler(ph_type, **ph_config)
 
@@ -85,4 +80,4 @@ class SchedulerConfig:
 
             parsed_profiles[profile_name] = profile
 
-        return cls(profile_handler=profile_handler, profiles=parsed_profiles)
+        return RustSchedulerConfig(profile_handler=profile_handler, profiles=parsed_profiles)

@@ -19,7 +19,7 @@ spec:
         - name: artifact-registry-secret
         containers:
         - name: ray-head
-          image: us-central1-docker.pkg.dev/gke-shared-ai-dev/verl-grpo/verl-ray:latest
+          image: verlai/verl:vllm017.latest
           ports:
           - containerPort: 6379
             name: gcs
@@ -60,7 +60,7 @@ spec:
         - name: artifact-registry-secret
         containers:
         - name: ray-worker
-          image: us-central1-docker.pkg.dev/gke-shared-ai-dev/verl-grpo/verl-ray:latest
+          image: verlai/verl:vllm017.latest
           env:
           - name: HUGGING_FACE_HUB_TOKEN
             valueFrom:
@@ -71,12 +71,8 @@ spec:
             value: /usr/local/nvidia/lib64
           resources:
             limits:
-              cpu: '64'
-              memory: 1024Gi
               nvidia.com/gpu: '8'
             requests:
-              cpu: '64'
-              memory: 1024Gi
               nvidia.com/gpu: '8'
           volumeMounts:
           - mountPath: /tmp/ray
