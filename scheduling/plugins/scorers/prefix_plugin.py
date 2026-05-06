@@ -134,7 +134,7 @@ class PrefixCacheScorer:
     ) -> None:
         self.block_size = block_size
         self.max_prefix_blocks = max_prefix_blocks
-        self.indexer = PrefixIndexer()
+        self.indexer = PrefixIndexer(lru_capacity_per_server=lru_capacity_per_server)
 
     def score(
         self,
