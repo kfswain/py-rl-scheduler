@@ -422,11 +422,13 @@ llm_config = LLMConfig(
     engine_kwargs={
         "enable_prefix_caching": True,
         "tensor_parallel_size": 2,
+        "enable_auto_tool_choice": True,
+        "tool_call_parser": "hermes",
     },
     deployment_config={
         "autoscaling_config": {
-            "min_replicas": 1,
-            "max_replicas": 1,
+            "min_replicas": 3,
+            "max_replicas": 12,
         },
         "request_router_config": {
             # Note our custom IGWRouter here
@@ -446,6 +448,8 @@ llm_config = LLMConfig(
             "NCCL_IB_TC": "52",
             "NCCL_IB_FIFO_TC": "84",
             "NCCL_TUNER_CONFIG_PATH": "/usr/local/gib/configs/tuner_config_a3u.txtpb",
+            "ENABLE_AUTO_TOOL_CHOICE": "1",
+            "TOOL_CALL_PARSER": "hermes",
         }
     },
 )

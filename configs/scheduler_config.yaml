@@ -22,12 +22,7 @@ data:
     profile_handler:
       type: single_profile
     profiles:
-      router_with_token_budget_and_drip:
-        flow_control:
-          use_token_budget: true
-          default_osl: 1024
-          drip_threshold_kv: 0.2
-          drip_interval_s: 2.0
+      basic_rr_routing:
         scorers:
           - type: round_robin
             weight: 1.0
