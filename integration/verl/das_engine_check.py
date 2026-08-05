@@ -78,21 +78,32 @@ def check_entry_point() -> None:
 
 def check_patch() -> tuple:
     print("3) proposer patch applies in place, idempotently")
-    from vllm.v1.spec_decode.suffix_decoding import (  # type: ignore[import-not-found]
-        SuffixDecodingProposer,
-    )
-
     from py_inference_scheduler.speculative import vllm_plugin
 
+    try:
+        from vllm.v1.spec_decode.suffix_decoding import (  # type: ignore[import-not-found]
+            SuffixDecodingProposer as HostCls,
+        )
+
+        host = "suffix"
+    except ImportError:
+        from vllm.v1.spec_decode.ngram_proposer import (  # type: ignore[import-not-found]
+            NgramProposer as HostCls,
+        )
+
+        host = "ngram"
+    host_cls = HostCls
+    print(f"  host: {host} (vLLM {'>= 0.11.1' if host == 'suffix' else '0.11.0-era'})")
+
     vllm_plugin.register()
-    _check(getattr(SuffixDecodingProposer, "_das_patched", False), "class patched")
-    patched_propose = SuffixDecodingProposer.propose
+    _check(getattr(host_cls, "_das_patched", False), "class patched")
+    patched_propose = host_cls.propose
     vllm_plugin.register()
-    _check(SuffixDecodingProposer.propose is patched_propose, "second register() is a no-op")
-    return SuffixDecodingProposer
+    _check(host_cls.propose is patched_propose, "second register() is a no-op")
+    return host, host_cls
 
 
-def check_propose(proposer_cls) -> None:
+def check_propose(host: str, proposer_cls) -> None:
     print("4) patched propose() on a fake batch (real cache + real trees)")
     stub_config = SimpleNamespace(
         speculative_config=SimpleNamespace(
@@ -101,8 +112,12 @@ def check_propose(proposer_cls) -> None:
             suffix_decoding_max_spec_factor=2.0,
             suffix_decoding_min_token_prob=0.1,
             suffix_decoding_max_cached_requests=1000,
+            prompt_lookup_min=2,
+            prompt_lookup_max=8,
         ),
         model_config=SimpleNamespace(max_model_len=4096),
+        scheduler_config=SimpleNamespace(max_num_seqs=64),
+        parallel_config=SimpleNamespace(tensor_parallel_size=1),
     )
     try:
         proposer = proposer_cls(stub_config)
@@ -130,16 +145,23 @@ def check_propose(proposer_cls) -> None:
     token_row = np.zeros(64, dtype=np.int64)
     token_row[:4] = prompt
     token_row[4:7] = motif[:3]  # generated so far: start of the motif
-    batch = SimpleNamespace(
-        req_ids=[das_req, "plain-request"],
-        num_prompt_tokens=np.array([4, 4]),
-        num_tokens_no_spec=np.array([7, 7]),
-        token_ids_cpu=np.stack([token_row, token_row]),
-        req_id_to_index={das_req: 0, "plain-request": 1},
-    )
-    drafts = proposer.propose(batch, [[motif[2]], [motif[2]]])
+    req_ids = [das_req, "plain-request"]
+    sampled = [[motif[2]], [motif[2]]]
+    num_tokens_no_spec = np.array([7, 7])
+    token_ids_cpu = np.stack([token_row, token_row])
+    if host == "suffix":
+        batch = SimpleNamespace(
+            req_ids=req_ids,
+            num_prompt_tokens=np.array([4, 4]),
+            num_tokens_no_spec=num_tokens_no_spec,
+            token_ids_cpu=token_ids_cpu,
+            req_id_to_index={das_req: 0, "plain-request": 1},
+        )
+        drafts = proposer.propose(batch, sampled)
+    else:
+        drafts = proposer.propose(sampled, req_ids, num_tokens_no_spec, token_ids_cpu, set())
     _check(getattr(proposer, "_das_state", None) is not None, "DAS survived propose()")
-    _check(len(drafts) == len(batch.req_ids), "one draft slot per request")
+    _check(len(drafts) == len(req_ids), "one draft slot per request")
     _check(list(drafts[0])[:3] == motif[3:6], "DAS request drafts from per-problem tree")
     print(f"  drafts: das={list(drafts[0])} plain={list(drafts[1])}")
     stats = proposer._das_state.tree_stats()
@@ -152,8 +174,8 @@ def main() -> int:
         return 1
     check_arctic()
     check_entry_point()
-    proposer_cls = check_patch()
-    check_propose(proposer_cls)
+    host, proposer_cls = check_patch()
+    check_propose(host, proposer_cls)
     print()
     print("PASS: DAS engine-side patch verified against real vllm + arctic")
     return 0

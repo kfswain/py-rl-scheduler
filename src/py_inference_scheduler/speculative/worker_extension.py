@@ -47,10 +47,10 @@ class DASWorkerExtension(_BaseExtension):  # type: ignore[valid-type,misc]
         if das_enabled():
             try:
                 from py_inference_scheduler.speculative.vllm_proposer import (
-                    das_patch_suffix_proposer,
+                    das_patch_proposer,
                 )
 
-                das_patch_suffix_proposer()
+                das_patch_proposer()
             except Exception as e:  # noqa: BLE001
                 logger.warning("DAS: worker-extension patch fallback failed: %s", e)
         return super().__new__(cls)

@@ -38,11 +38,9 @@ def register() -> None:
     if not das_enabled():
         return
     try:
-        from py_inference_scheduler.speculative.vllm_proposer import (
-            das_patch_suffix_proposer,
-        )
+        from py_inference_scheduler.speculative.vllm_proposer import das_patch_proposer
 
-        das_patch_suffix_proposer()
+        das_patch_proposer()
     except Exception as e:  # noqa: BLE001
         # Never break engine startup: DAS silently degrades to stock vLLM.
         logger.warning("DAS: plugin registration failed, running without DAS: %s", e)

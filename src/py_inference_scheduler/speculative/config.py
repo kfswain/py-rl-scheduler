@@ -93,6 +93,10 @@ class DASConfig:
     # (approximates DAS's recency down-weighting with raw-count trees).
     fresh_iterations: int = 2
     max_tree_depth: int = 24
+    # Draft-length scaling vs match length and confidence floor, used by the
+    # ngram host (the suffix host takes these from vLLM's speculative_config).
+    max_spec_factor: float = 2.0
+    min_token_prob: float = 0.1
     # Engine delta-pump poll cadence; also ships intra-step cross-engine data.
     poll_interval_s: float = 2.0
     max_delta_batch_tokens: int = 500_000
@@ -115,6 +119,8 @@ def _build(section: dict) -> DASConfig:
         window_iterations=int(section.get("window_iterations", 16)),
         fresh_iterations=int(section.get("fresh_iterations", 2)),
         max_tree_depth=int(section.get("max_tree_depth", 24)),
+        max_spec_factor=float(section.get("max_spec_factor", 2.0)),
+        min_token_prob=float(section.get("min_token_prob", 0.1)),
         poll_interval_s=float(section.get("poll_interval_s", 2.0)),
         max_delta_batch_tokens=int(section.get("max_delta_batch_tokens", 500_000)),
         reset_on_weight_update=bool(section.get("reset_on_weight_update")),

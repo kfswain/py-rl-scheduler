@@ -34,6 +34,19 @@
 
 set -x
 
+# DAS host method depends on the image's vLLM:
+#   >= 0.11.1 (has suffix decoding): method=suffix
+#   0.11.0 (no suffix module): method=ngram hosts DAS (prompt_lookup_* are
+#   required by vLLM config validation; DAS replaces the drafting logic)
+# NOTE: Hydra's override grammar rejects inline JSON dicts; dotted nested
+# keys are the robust form.
+SC=+actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config
+if [ "${DAS_HOST:-ngram}" = "suffix" ]; then
+  SPEC_ARGS="$SC.method=suffix $SC.num_speculative_tokens=24 $SC.suffix_decoding_max_tree_depth=24 $SC.suffix_decoding_max_spec_factor=2.0 $SC.suffix_decoding_min_token_prob=0.1"
+else
+  SPEC_ARGS="$SC.method=ngram $SC.num_speculative_tokens=24 $SC.prompt_lookup_max=8 $SC.prompt_lookup_min=2"
+fi
+
 deepscaler_train_path=/home/ray/data/deepscaler/train.parquet
 deepscaler_test_path=/home/ray/data/deepscaler/test.parquet
 
@@ -80,5 +93,5 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=5 \
     trainer.total_training_steps=10 \
     actor_rollout_ref.rollout.disable_log_stats=False \
-    '+actor_rollout_ref.rollout.engine_kwargs.vllm.speculative_config={"method": "suffix", "num_speculative_tokens": 24, "suffix_decoding_max_tree_depth": 24, "suffix_decoding_max_spec_factor": 2.0, "suffix_decoding_min_token_prob": 0.1}' \
+    ${SPEC_ARGS} \
     +actor_rollout_ref.rollout.agent.agent_loop_manager_class=integration.verl.verl_hook.PyInferenceAgentLoopManager $@

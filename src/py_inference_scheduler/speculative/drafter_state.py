@@ -209,6 +209,9 @@ class DASDrafterState:
         self._trees: dict[str, object] = {}
         self._cls: dict[str, int] = {}
         self._transients: dict[str, tuple[str, int]] = {}  # req_id -> (phash, seq_id)
+        # req_id -> first-seen token count minus that step's sampled tokens
+        # (~= prompt length); the ngram host has no prompt boundary of its own.
+        self._req_baselines: dict[str, int] = {}
         self._next_transient = TRANSIENT_BASE
         self._iteration = -1
         self._version = -1
@@ -242,6 +245,7 @@ class DASDrafterState:
         self._trees.clear()
         self._cls.clear()
         self._transients.clear()
+        self._req_baselines.clear()
 
     def _drop_all_transients(self) -> None:
         for phash, seq_id in self._transients.values():
@@ -277,12 +281,27 @@ class DASDrafterState:
         self._tree(entry[0]).extend(entry[1], token_ids)
 
     def drop_request(self, req_id: str) -> None:
+        self._req_baselines.pop(req_id, None)
         entry = self._transients.pop(req_id, None)
         if entry is None:
             return
         tree = self._trees.get(entry[0])
         if tree is not None:
             self._safe_remove(tree, entry[1])
+
+    def note_request_start(self, req_id: str, num_tokens: int, num_sampled: int) -> int:
+        """Record (once) and return the request's prompt-length baseline."""
+        baseline = self._req_baselines.get(req_id)
+        if baseline is None:
+            baseline = max(0, num_tokens - num_sampled)
+            self._req_baselines[req_id] = baseline
+        return baseline
+
+    def drop_departed(self, active_req_ids) -> None:
+        """Drop transients/baselines for requests no longer in the batch."""
+        departed = (set(self._req_baselines) | set(self._transients)) - set(active_req_ids)
+        for req_id in departed:
+            self.drop_request(req_id)
 
     # -------------------------------------------------------------- drafts
 

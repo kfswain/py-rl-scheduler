@@ -18,6 +18,12 @@ das:
   # suffix_decoding_max_tree_depth in the vLLM speculative_config.
   max_tree_depth: 24
 
+  # Draft-length scaling vs match length + confidence floor. Used by the
+  # ngram host (vLLM 0.11.0); the suffix host (>= 0.11.1) reads these from
+  # vLLM's speculative_config instead.
+  max_spec_factor: 2.0
+  min_token_prob: 0.1
+
   # Engine delta-pump poll cadence. Polling also ships intra-step
   # cross-engine trajectories (a superset of the paper's per-iteration
   # refresh); the decode hot path never touches the network either way.
