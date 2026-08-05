@@ -1,0 +1,374 @@
+# Copyright 2026 llm-d
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Centralized trajectory store: the SuffixDataService actor.
+
+One named detached Ray actor gathers rollout trajectories from every
+agent-loop worker and redistributes them to engine replicas as a versioned
+delta log. Engines apply deltas to local per-problem suffix trees, so the
+decode hot path never crosses the network.
+
+The class is a plain object (Ray-agnostic) so unit tests drive it directly;
+``get_or_create_suffix_service`` wraps it as the shared actor.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections import OrderedDict, deque
+from dataclasses import dataclass, field
+
+from py_inference_scheduler.speculative.config import DASConfig
+from py_inference_scheduler.speculative.contracts import (
+    SHADOW_OFFSET,
+    DeltaBatch,
+    LengthStats,
+    TrajectoryDelta,
+    TrajectoryPush,
+    serialize_delta_batch,
+)
+
+logger = logging.getLogger(__name__)
+
+_LOG_CAPACITY = 200_000
+_EMA_ALPHA = 0.2
+_P50_SAMPLE = 64
+
+# Log entry kinds.
+_ADD = "add"
+_RM = "rm"
+_DROP = "drop"
+_CLS = "cls"
+
+
+@dataclass
+class _SeqRecord:
+    token_ids: tuple
+    iteration: int
+    has_shadow: bool
+
+
+@dataclass
+class _ProblemState:
+    seqs: OrderedDict[int, _SeqRecord] = field(default_factory=OrderedDict)
+    count: int = 0
+    mean: float = 0.0
+    ema_mean: float = 0.0
+    recent_lengths: deque[int] = field(default_factory=lambda: deque(maxlen=_P50_SAMPLE))
+    cls: int = 0
+
+
+class SuffixDataService:
+    """Versioned, sliding-window, per-problem trajectory store."""
+
+    def __init__(self, config: DASConfig | None = None) -> None:
+        self.cfg = config or DASConfig()
+        self._iteration = 0
+        self._version = 0
+        self._next_seq = 0
+        self._problems: dict[str, _ProblemState] = {}
+        self._problem_lru: OrderedDict[str, None] = OrderedDict()
+        # iteration -> ([(problem_id, seq_id)], shadows_dropped)
+        self._window: OrderedDict[int, dict] = OrderedDict()
+        self._log: deque[tuple[int, str, object]] = deque(maxlen=_LOG_CAPACITY)
+        self._total_tokens = 0
+        self._replica_versions: dict[str, int] = {}
+        self._pushes_received = 0
+        self._snapshots_served = 0
+
+    # ------------------------------------------------------------------ log
+
+    def _emit(self, kind: str, payload: object) -> None:
+        self._version += 1
+        self._log.append((self._version, kind, payload))
+
+    def _log_floor(self) -> int:
+        """Oldest version still replayable from the log."""
+        return self._log[0][0] if self._log else self._version + 1
+
+    # -------------------------------------------------------------- ingest
+
+    def add_trajectories(self, worker_id: str, items: list[TrajectoryPush]) -> None:
+        for push in items:
+            tokens = tuple(push.token_ids)
+            if not tokens:
+                continue
+            self._pushes_received += 1
+            self._add_one(push.problem_id, tokens)
+        self._enforce_token_cap()
+
+    def _add_one(self, problem_id: str, tokens: tuple) -> None:
+        prob = self._problems.get(problem_id)
+        if prob is None:
+            prob = _ProblemState()
+            self._problems[problem_id] = prob
+            self._enforce_problem_cap(keep=problem_id)
+        self._problem_lru[problem_id] = None
+        self._problem_lru.move_to_end(problem_id)
+
+        while len(prob.seqs) >= self.cfg.limits.max_seqs_per_problem:
+            old_seq, old_rec = prob.seqs.popitem(last=False)
+            self._remove_seq_entries(problem_id, old_seq, old_rec)
+
+        seq_id = self._next_seq
+        self._next_seq = (self._next_seq + 1) % SHADOW_OFFSET
+        has_shadow = self.cfg.fresh_iterations > 0
+        prob.seqs[seq_id] = _SeqRecord(tokens, self._iteration, has_shadow)
+        self._window.setdefault(self._iteration, {"entries": [], "shadows_dropped": False})
+        self._window[self._iteration]["entries"].append((problem_id, seq_id))
+        self._total_tokens += len(tokens)
+
+        self._emit(_ADD, TrajectoryDelta(problem_id, seq_id, tokens))
+        if has_shadow:
+            self._emit(_ADD, TrajectoryDelta(problem_id, seq_id + SHADOW_OFFSET, tokens))
+
+        self._update_stats(problem_id, prob, len(tokens))
+
+    def _update_stats(self, problem_id: str, prob: _ProblemState, length: int) -> None:
+        prob.count += 1
+        prob.mean += (length - prob.mean) / prob.count
+        prob.ema_mean = (
+            float(length)
+            if prob.count == 1
+            else _EMA_ALPHA * length + (1.0 - _EMA_ALPHA) * prob.ema_mean
+        )
+        prob.recent_lengths.append(length)
+        new_cls = self.cfg.classifier.class_for_length(prob.ema_mean)
+        if new_cls != prob.cls:
+            prob.cls = new_cls
+            self._emit(_CLS, (problem_id, new_cls))
+
+    # ------------------------------------------------------------ eviction
+
+    def _remove_seq_entries(self, problem_id: str, seq_id: int, rec: _SeqRecord) -> None:
+        self._total_tokens -= len(rec.token_ids)
+        self._emit(_RM, (problem_id, seq_id))
+        if rec.has_shadow:
+            self._emit(_RM, (problem_id, seq_id + SHADOW_OFFSET))
+
+    def _drop_problem(self, problem_id: str) -> None:
+        prob = self._problems.pop(problem_id, None)
+        self._problem_lru.pop(problem_id, None)
+        if prob is None:
+            return
+        for rec in prob.seqs.values():
+            self._total_tokens -= len(rec.token_ids)
+        # A single drop entry stands in for per-seq removals.
+        self._emit(_DROP, problem_id)
+
+    def _enforce_problem_cap(self, keep: str) -> None:
+        while len(self._problems) > self.cfg.limits.max_problems:
+            for candidate in self._problem_lru:
+                if candidate != keep:
+                    self._drop_problem(candidate)
+                    break
+            else:
+                return
+
+    def _enforce_token_cap(self) -> None:
+        while self._total_tokens > self.cfg.limits.max_total_tokens and self._window:
+            oldest_iter = next(iter(self._window))
+            if oldest_iter >= self._iteration:
+                # Only the current iteration remains; drop LRU problems instead.
+                if not self._problem_lru:
+                    return
+                self._drop_problem(next(iter(self._problem_lru)))
+                continue
+            self._evict_iteration(oldest_iter)
+
+    def _evict_iteration(self, iteration: int) -> None:
+        info = self._window.pop(iteration, None)
+        if info is None:
+            return
+        for problem_id, seq_id in info["entries"]:
+            prob = self._problems.get(problem_id)
+            if prob is None:
+                continue
+            rec = prob.seqs.pop(seq_id, None)
+            if rec is not None:
+                self._remove_seq_entries(problem_id, seq_id, rec)
+
+    # ----------------------------------------------------------- iteration
+
+    def begin_iteration(self, step: int) -> dict:
+        """Advance the window to training step *step*. Idempotent per step."""
+        if step > self._iteration:
+            self._iteration = step
+            self._expire_shadows()
+            self._expire_window()
+        return {
+            "iteration": self._iteration,
+            "version": self._version,
+            "problems": len(self._problems),
+            "total_tokens": self._total_tokens,
+        }
+
+    def _expire_shadows(self) -> None:
+        cutoff = self._iteration - self.cfg.fresh_iterations
+        for iteration, info in self._window.items():
+            if iteration > cutoff or info["shadows_dropped"]:
+                continue
+            info["shadows_dropped"] = True
+            for problem_id, seq_id in info["entries"]:
+                prob = self._problems.get(problem_id)
+                rec = prob.seqs.get(seq_id) if prob else None
+                if rec is not None and rec.has_shadow:
+                    rec.has_shadow = False
+                    self._emit(_RM, (problem_id, seq_id + SHADOW_OFFSET))
+
+    def _expire_window(self) -> None:
+        cutoff = self._iteration - self.cfg.window_iterations
+        for iteration in [it for it in self._window if it <= cutoff]:
+            self._evict_iteration(iteration)
+
+    # -------------------------------------------------------------- deltas
+
+    def get_deltas(self, replica_id: str, since_version: int) -> bytes | None:
+        self._replica_versions[replica_id] = since_version
+        # A fresh replica (-1) and an empty service (version 0) are in sync:
+        # entry versions start at 1.
+        if max(since_version, 0) >= self._version:
+            return None
+        # Incremental replay needs every entry in (since_version, current] to
+        # still be in the log; versions are contiguous starting at 1.
+        if max(since_version + 1, 1) < self._log_floor():
+            self._snapshots_served += 1
+            return serialize_delta_batch(self._build_snapshot())
+        return serialize_delta_batch(self._build_incremental(since_version))
+
+    def _build_incremental(self, since_version: int) -> DeltaBatch:
+        """Collect log entries after *since_version*, compacted.
+
+        The wire format carries adds/removals/drops as separate lists, so log
+        order is not preserved on the receiver. Compaction makes intra-batch
+        order irrelevant: a seq_id is added exactly once and removed at most
+        once ever, so an add+removal pair inside the collected range cancels
+        outright, and a problem drop purges the range's earlier entries for
+        that problem (entries after the drop re-create it legitimately).
+        Surviving removals/drops therefore always refer to state from before
+        this batch, and the receiver may apply drops, then removals, then
+        adds, in any internal order.
+        """
+        batch = DeltaBatch(
+            from_version=since_version,
+            to_version=since_version,
+            iteration=self._iteration,
+        )
+        adds: OrderedDict[tuple[str, int], TrajectoryDelta] = OrderedDict()
+        removals: list[tuple[str, int]] = []
+        drops: list[str] = []
+        budget = self.cfg.max_delta_batch_tokens
+        for version, kind, payload in self._log:
+            if version <= since_version:
+                continue
+            if kind == _ADD:
+                delta: TrajectoryDelta = payload  # type: ignore[assignment]
+                if budget - len(delta.token_ids) < 0 and adds:
+                    break
+                budget -= len(delta.token_ids)
+                adds[delta.problem_id, delta.seq_id] = delta
+            elif kind == _RM:
+                key = payload  # type: ignore[assignment]
+                if key in adds:
+                    budget += len(adds.pop(key).token_ids)
+                else:
+                    removals.append(key)
+            elif kind == _DROP:
+                problem_id: str = payload  # type: ignore[assignment]
+                for key in [k for k in adds if k[0] == problem_id]:
+                    budget += len(adds.pop(key).token_ids)
+                removals = [r for r in removals if r[0] != problem_id]
+                batch.problem_cls.pop(problem_id, None)
+                drops.append(problem_id)
+            elif kind == _CLS:
+                problem_id, cls = payload  # type: ignore[misc]
+                batch.problem_cls[problem_id] = cls
+            batch.to_version = version
+        batch.adds = list(adds.values())
+        batch.removals = removals
+        batch.dropped_problems = drops
+        return batch
+
+    def _build_snapshot(self) -> DeltaBatch:
+        batch = DeltaBatch(
+            from_version=-1,
+            to_version=self._version,
+            iteration=self._iteration,
+            snapshot=True,
+        )
+        for problem_id, prob in self._problems.items():
+            for seq_id, rec in prob.seqs.items():
+                batch.adds.append(TrajectoryDelta(problem_id, seq_id, rec.token_ids))
+                if rec.has_shadow:
+                    batch.adds.append(
+                        TrajectoryDelta(problem_id, seq_id + SHADOW_OFFSET, rec.token_ids)
+                    )
+            batch.problem_cls[problem_id] = prob.cls
+        return batch
+
+    # ----------------------------------------------------------------- ops
+
+    def reset(self, reason: str) -> None:
+        logger.warning("SuffixDataService reset: %s", reason)
+        self._problems.clear()
+        self._problem_lru.clear()
+        self._window.clear()
+        self._log.clear()
+        self._total_tokens = 0
+        # Version stays monotonic with an empty log, so every replica at an
+        # older version falls off the log and receives an empty snapshot,
+        # which clears its local state.
+        self._version += 1
+
+    def get_length_stats(self) -> dict[str, LengthStats]:
+        out: dict[str, LengthStats] = {}
+        for problem_id, prob in self._problems.items():
+            ordered = sorted(prob.recent_lengths)
+            p50 = float(ordered[len(ordered) // 2]) if ordered else 0.0
+            out[problem_id] = LengthStats(
+                count=prob.count,
+                mean=prob.mean,
+                p50=p50,
+                ema_mean=prob.ema_mean,
+                cls=prob.cls,
+            )
+        return out
+
+    def get_metrics(self) -> dict[str, float]:
+        lag = {
+            replica: float(self._version - v) for replica, v in self._replica_versions.items()
+        }
+        return {
+            "das_iteration": float(self._iteration),
+            "das_log_version": float(self._version),
+            "das_problem_count": float(len(self._problems)),
+            "das_total_tokens": float(self._total_tokens),
+            "das_window_iterations": float(len(self._window)),
+            "das_pushes_received": float(self._pushes_received),
+            "das_snapshots_served": float(self._snapshots_served),
+            "das_max_replica_lag": max(lag.values()) if lag else 0.0,
+        }
+
+
+def get_or_create_suffix_service(config: DASConfig | None = None) -> object:
+    """Create or fetch the shared named actor handle (detached, cluster-wide)."""
+    import ray
+
+    cfg = config or DASConfig()
+    actor_cls = ray.remote(num_cpus=1)(SuffixDataService)
+    return actor_cls.options(
+        name=cfg.service_name,
+        namespace=cfg.service_namespace,
+        lifetime="detached",
+        get_if_exists=True,
+    ).remote(cfg)

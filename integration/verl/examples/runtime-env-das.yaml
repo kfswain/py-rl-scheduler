@@ -1,0 +1,42 @@
+# Runtime env for DAS-enabled runs. Differences from runtime-env.yaml:
+#   - arctic-inference: required by vLLM's method="suffix" (the C++ suffix
+#     tree DAS builds on). vLLM hard-fails on the method without it.
+#   - py-inference-scheduler installed as a *package* (not just working_dir)
+#     so the vllm.general_plugins entry point has pip metadata in every
+#     engine process. Without it, the DASWorkerExtension fallback still
+#     patches the proposer on verl >= 0.9.
+#   - PYIS_DAS_ENABLED / DAS_CONFIG_PATH: master switch + config.
+#
+# NOTE: the hook auto-detects legacy (verl 0.7.1) vs modern (verl 0.9.x)
+# layouts. Full cross-engine delta delivery requires the modern layout
+# (vLLMHttpServer.collective_rpc + _get_worker_extension_cls). On verl
+# 0.7.x DAS degrades gracefully: central gathering, problem-hash request
+# ids, and stock suffix decoding all work; engines just don't receive
+# cross-worker tree data. Pin the exact verl your cluster is validated on.
+# NOTE: DAS lives on the spec-decode-test branch until merged; point these
+# two URLs back at main after merge.
+working_dir: "https://github.com/llm-d-incubation/py-inference-scheduler/archive/refs/heads/spec-decode-test.zip"
+
+pip:
+  - "verl>=0.9.0,<0.10"
+  - "arctic-inference==0.1.1"
+  - "py-inference-scheduler @ https://github.com/llm-d-incubation/py-inference-scheduler/archive/refs/heads/spec-decode-test.zip"
+
+env_vars:
+  PROMETHEUS_MULTIPROC_DIR: "/tmp/metrics"
+  PYTHONPATH: "."
+  ROUTER_CONFIG_PATH: "./integration/verl/examples/scheduler.yaml"
+  PYIS_DAS_ENABLED: "1"
+  DAS_CONFIG_PATH: "./configs/das_config.yaml"
+  NCCL_DEBUG: "INFO"
+  NCCL_NET_PLUGIN: "/usr/local/gib/lib64/libnccl-net_internal.so"
+  NCCL_CROSS_NIC: "0"
+  NCCL_NET_GDR_LEVEL: "PIX"
+  NCCL_P2P_NET_CHUNKSIZE: "131072"
+  NCCL_NVLS_CHUNKSIZE: "524288"
+  NCCL_IB_ADAPTIVE_ROUTING: "1"
+  NCCL_IB_QPS_PER_CONNECTION: "4"
+  NCCL_IB_TC: "52"
+  NCCL_IB_FIFO_TC: "84"
+  NCCL_TUNER_CONFIG_PATH: "/usr/local/gib/configs/tuner_config_a3u.txtpb"
+  GLOO_SOCKET_IFNAME: "eth0"

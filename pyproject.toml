@@ -36,6 +36,11 @@ dependencies = [
     "setproctitle>=1.3",
 ]
 
+# Loaded by vLLM in every engine process (process0, EngineCore, GPU workers);
+# inert unless PYIS_DAS_ENABLED=1. See src/py_inference_scheduler/speculative/.
+[project.entry-points."vllm.general_plugins"]
+pyis_das = "py_inference_scheduler.speculative.vllm_plugin:register"
+
 [dependency-groups]
 dev = [
     "pytest>=7.0",

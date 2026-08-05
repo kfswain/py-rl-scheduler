@@ -1,0 +1,270 @@
+"""SuffixDataService driven as a plain object (no Ray)."""
+
+from py_inference_scheduler.speculative import service as service_module
+from py_inference_scheduler.speculative.config import (
+    CLS_LONG,
+    CLS_SHORT,
+    DASClassifierConfig,
+    DASConfig,
+    DASServiceLimits,
+)
+from py_inference_scheduler.speculative.contracts import (
+    SHADOW_OFFSET,
+    TrajectoryPush,
+    deserialize_delta_batch,
+)
+from py_inference_scheduler.speculative.service import SuffixDataService
+
+
+def push(problem_id, tokens, server="s1"):
+    return TrajectoryPush(
+        problem_id=problem_id, token_ids=tuple(tokens), prompt_len=4, server_id=server
+    )
+
+
+def drain(svc, replica="r1", since=-1):
+    """Pull batches until caught up; returns (batches, final_version)."""
+    batches = []
+    while True:
+        payload = svc.get_deltas(replica, since)
+        if payload is None:
+            return batches, since
+        batch = deserialize_delta_batch(payload)
+        batches.append(batch)
+        since = batch.to_version
+
+
+def make_service(**overrides):
+    cfg = DASConfig(
+        window_iterations=overrides.pop("window_iterations", 4),
+        fresh_iterations=overrides.pop("fresh_iterations", 1),
+        limits=overrides.pop("limits", DASServiceLimits()),
+        classifier=overrides.pop("classifier", DASClassifierConfig()),
+        max_delta_batch_tokens=overrides.pop("max_delta_batch_tokens", 500_000),
+    )
+    assert not overrides
+    return SuffixDataService(cfg)
+
+
+def test_add_emits_base_and_shadow():
+    svc = make_service()
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    batches, _ = drain(svc)
+    adds = [a for b in batches for a in b.adds]
+    assert len(adds) == 2
+    base, shadow = adds
+    assert base.token_ids == (1, 2, 3)
+    assert shadow.seq_id == base.seq_id + SHADOW_OFFSET
+    assert shadow.token_ids == base.token_ids
+
+
+def test_no_shadow_when_fresh_disabled():
+    svc = make_service(fresh_iterations=0)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    batches, _ = drain(svc)
+    assert len([a for b in batches for a in b.adds]) == 1
+
+
+def test_empty_trajectories_ignored():
+    svc = make_service()
+    svc.add_trajectories("w", [push("p1", [])])
+    assert svc.get_deltas("r1", -1) is None
+
+
+def test_shadow_expires_after_fresh_window():
+    svc = make_service(fresh_iterations=1, window_iterations=10)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    _, version = drain(svc)
+
+    svc.begin_iteration(2)
+    batches, _ = drain(svc, since=version)
+    removals = [r for b in batches for r in b.removals]
+    assert len(removals) == 1
+    assert removals[0][1] >= SHADOW_OFFSET  # only the shadow died
+
+
+def test_window_eviction_removes_base_seq():
+    svc = make_service(fresh_iterations=1, window_iterations=2)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    _, version = drain(svc)
+
+    svc.begin_iteration(4)  # cutoff = 4 - 2 = 2 >= 1: iteration 1 evicted
+    batches, _ = drain(svc, since=version)
+    removals = {r[1] for b in batches for r in b.removals}
+    base_ids = {r for r in removals if r < SHADOW_OFFSET}
+    assert len(base_ids) == 1
+    assert svc.get_metrics()["das_total_tokens"] == 0.0
+
+
+def test_begin_iteration_idempotent():
+    svc = make_service()
+    svc.begin_iteration(3)
+    svc.add_trajectories("w", [push("p1", [1, 2])])
+    v1 = svc.get_metrics()["das_log_version"]
+    info = svc.begin_iteration(3)
+    assert svc.get_metrics()["das_log_version"] == v1
+    assert info["iteration"] == 3
+
+
+def test_incremental_delta_versioning():
+    svc = make_service()
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    batches, version = drain(svc)
+    assert batches
+    assert not batches[0].snapshot
+    assert svc.get_deltas("r1", version) is None
+
+    svc.add_trajectories("w", [push("p1", [4, 5, 6])])
+    batches, _ = drain(svc, since=version)
+    adds = [a for b in batches for a in b.adds]
+    assert {tuple(a.token_ids) for a in adds} == {(4, 5, 6)}
+
+
+def test_bounded_batches_drain_fully():
+    svc = make_service(max_delta_batch_tokens=5)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1] * 4), push("p2", [2] * 4)])
+    batches, _ = drain(svc)
+    assert len(batches) > 1
+    adds = [a for b in batches for a in b.adds]
+    assert len(adds) == 4  # 2 base + 2 shadows across batches
+
+
+def test_snapshot_when_log_truncated(monkeypatch):
+    monkeypatch.setattr(service_module, "_LOG_CAPACITY", 4)
+    svc = make_service()
+    svc.begin_iteration(1)
+    for i in range(6):
+        svc.add_trajectories("w", [push("p1", [i, i, i])])
+    payload = svc.get_deltas("r1", -1)
+    batch = deserialize_delta_batch(payload)
+    assert batch.snapshot
+    assert batch.to_version == svc.get_metrics()["das_log_version"]
+    # Snapshot carries the full live state: 6 base + 6 shadow sequences.
+    assert len(batch.adds) == 12
+    assert "p1" in batch.problem_cls
+
+
+def test_snapshot_applies_after_reset():
+    svc = make_service()
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    _, version = drain(svc)
+    svc.reset("model swap")
+    payload = svc.get_deltas("r1", version)
+    batch = deserialize_delta_batch(payload)
+    assert batch.snapshot
+    assert batch.adds == []
+    assert svc.get_metrics()["das_problem_count"] == 0.0
+
+
+def test_max_seqs_per_problem_evicts_oldest():
+    svc = make_service(
+        limits=DASServiceLimits(max_total_tokens=10**9, max_problems=10, max_seqs_per_problem=2)
+    )
+    svc.begin_iteration(1)
+    for i in range(2):
+        svc.add_trajectories("w", [push("p1", [i, i])])
+    # Sync a replica first: eviction removals only ship to replicas that
+    # already hold the sequence (fresh drains compact them away instead).
+    _, version = drain(svc)
+    svc.add_trajectories("w", [push("p1", [9, 9])])
+    batches, _ = drain(svc, since=version)
+    removals = [r for b in batches for r in b.removals]
+    # Oldest seq evicted: base + shadow removal.
+    assert len(removals) == 2
+    # A fresh replica sees only the two live sequences, no removals.
+    fresh_batches, _ = drain(svc, replica="fresh", since=-1)
+    assert [r for b in fresh_batches for r in b.removals] == []
+    assert len([a for b in fresh_batches for a in b.adds]) == 4  # 2 live x (base+shadow)
+
+
+def test_max_problems_drops_lru():
+    svc = make_service(
+        limits=DASServiceLimits(max_total_tokens=10**9, max_problems=2, max_seqs_per_problem=8)
+    )
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1]), push("p2", [2]), push("p3", [3])])
+    batches, _ = drain(svc)
+    dropped = [d for b in batches for d in b.dropped_problems]
+    assert dropped == ["p1"]
+    assert svc.get_metrics()["das_problem_count"] == 2.0
+
+
+def test_token_cap_evicts_old_iterations():
+    svc = make_service(
+        limits=DASServiceLimits(max_total_tokens=10, max_problems=10, max_seqs_per_problem=64)
+    )
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1] * 8)])
+    svc.begin_iteration(2)
+    svc.add_trajectories("w", [push("p1", [2] * 8)])
+    assert svc.get_metrics()["das_total_tokens"] <= 10
+
+
+def test_length_stats_and_class_transitions():
+    svc = make_service(classifier=DASClassifierConfig(short_max_tokens=4, long_min_tokens=8))
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [0] * 2)])
+    assert svc.get_length_stats()["p1"].cls == CLS_SHORT
+    for _ in range(20):
+        svc.add_trajectories("w", [push("p1", [0] * 20)])
+    stats = svc.get_length_stats()["p1"]
+    assert stats.cls == CLS_LONG
+    assert stats.count == 21
+    assert stats.p50 == 20.0
+
+    batches, _ = drain(svc)
+    cls_updates = {}
+    for b in batches:
+        cls_updates.update(b.problem_cls)
+    assert cls_updates["p1"] == CLS_LONG
+
+
+def test_fresh_replica_replay_compacts_cancelled_history():
+    """Regression: a fresh replica draining add+evict history in one batch
+    must not resurrect evicted sequences (wire format loses log order, so
+    the service must cancel add/removal pairs within the batch range)."""
+    svc = make_service(fresh_iterations=1, window_iterations=2)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(5)  # evicts iteration 1 entirely
+    svc.add_trajectories("w", [push("p1", [7, 8, 9])])
+
+    batches, _ = drain(svc, replica="fresh", since=-1)
+    adds = [a for b in batches for a in b.adds]
+    removals = [r for b in batches for r in b.removals]
+    # Only the live sequence (base + shadow) ships; the evicted one and its
+    # removals cancel out entirely.
+    assert {tuple(a.token_ids) for a in adds} == {(7, 8, 9)}
+    assert len(adds) == 2
+    assert removals == []
+
+
+def test_dropped_problem_purges_in_range_adds():
+    svc = make_service(
+        fresh_iterations=0,
+        limits=DASServiceLimits(max_total_tokens=10**9, max_problems=1, max_seqs_per_problem=8),
+    )
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.add_trajectories("w", [push("p2", [4, 5, 6])])  # drops p1 (LRU cap 1)
+    batches, _ = drain(svc, replica="fresh", since=-1)
+    adds = [a for b in batches for a in b.adds]
+    dropped = [d for b in batches for d in b.dropped_problems]
+    assert {tuple(a.token_ids) for a in adds} == {(4, 5, 6)}
+    assert dropped == ["p1"]
+
+
+def test_replica_lag_metric():
+    svc = make_service()
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.get_deltas("r1", -1)
+    metrics = svc.get_metrics()
+    assert metrics["das_max_replica_lag"] > 0

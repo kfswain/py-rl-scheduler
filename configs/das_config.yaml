@@ -1,0 +1,59 @@
+# DAS (Distribution-Aware Speculative decoding) configuration.
+# Consumed by every DAS participant (trainer driver, agent-loop workers,
+# vLLM server actors, GPU workers) via the DAS_CONFIG_PATH env var.
+# All values shown are the defaults; omitted keys fall back to these.
+das:
+  enabled: true
+
+  # Sliding window over training iterations retained in the central store.
+  # DAS paper ablations favor 16-32; larger = more matches, staler policy.
+  window_iterations: 16
+
+  # Iterations whose trajectories also carry a 2x-count shadow copy in the
+  # trees — approximates the paper's recency down-weighting with raw-count
+  # suffix trees. Memory overhead ~= fresh_iterations / window_iterations.
+  fresh_iterations: 2
+
+  # Suffix tree depth (bounds match length + draft length). Keep equal to
+  # suffix_decoding_max_tree_depth in the vLLM speculative_config.
+  max_tree_depth: 24
+
+  # Engine delta-pump poll cadence. Polling also ships intra-step
+  # cross-engine trajectories (a superset of the paper's per-iteration
+  # refresh); the decode hot path never touches the network either way.
+  poll_interval_s: 2.0
+
+  # Upper bound on tokens per delta batch (both RPC hops); pumps loop
+  # until drained, so this bounds stall time, not throughput.
+  max_delta_batch_tokens: 500000
+
+  # Length-aware speculation budgets (max draft tokens per class).
+  # short: 0 disables drafting for Short requests entirely.
+  budgets:
+    long: 24
+    medium: 8
+    short: 0
+
+  # Generation-length thresholds separating the classes. A problem's class
+  # comes from the EMA of its historical generation lengths; a running
+  # request is upgraded (never downgraded) when its observed length crosses
+  # a threshold.
+  classifier:
+    short_max_tokens: 256
+    long_min_tokens: 1024
+
+  # Central store memory bounds. Breaches evict oldest iterations first,
+  # then least-recently-pushed problems, and broadcast the removals.
+  service:
+    max_total_tokens: 64000000
+    max_problems: 8192
+    max_seqs_per_problem: 512
+
+  # Hook-side push batching (fire-and-forget; overflow drops with a counter).
+  push:
+    batch_size: 64
+    flush_interval_s: 0.5
+    queue_capacity: 4096
+
+  # Window handles policy drift; a reset is only for genuine model swaps.
+  reset_on_weight_update: false
