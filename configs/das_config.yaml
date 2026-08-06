@@ -24,9 +24,15 @@ das:
   max_spec_factor: 2.0
   min_token_prob: 0.1
 
-  # Engine delta-pump poll cadence. Polling also ships intra-step
-  # cross-engine trajectories (a superset of the paper's per-iteration
-  # refresh); the decode hot path never touches the network either way.
+  # Speculate (and apply mid-rollout deltas) only when the engine's active
+  # decode batch has collapsed to at most this many requests: the
+  # straggler-tail regime where the GPU has verification slack and the
+  # per-problem trees are warmest. 0 disables the gate.
+  tail_max_active: 8
+
+  # Engine delta-pump poll cadence. The bulk of tree data ships in the
+  # wake_up boundary drain (engine idle); mid-rollout polls only top up
+  # stragglers while the tail gate above is open.
   poll_interval_s: 2.0
 
   # Upper bound on tokens per delta batch (both RPC hops); pumps loop

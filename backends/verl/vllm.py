@@ -112,6 +112,16 @@ class VllmEnginePatch:
             async def das_wake_up(self, *args, **kwargs):
                 result = await original_wake(self, *args, **kwargs)
                 self._das_engine_sleeping = False
+                # Boundary drain: ship everything the last iteration produced
+                # now, while the engine is awake but idle — the rollout that
+                # is about to start never pays mid-decode apply stalls.
+                try:
+                    if getattr(self, "_das_replica_id", None) and _das_ensure_service(self, cfg):
+                        applied = await _das_apply_boundary(self, cfg)
+                        if applied:
+                            logger.info("DAS: boundary drain applied %d batches", applied)
+                except Exception:
+                    logger.exception("DAS: boundary drain failed; next boundary catches up")
                 return result
 
             http_server_cls.wake_up = das_wake_up
@@ -154,63 +164,112 @@ def _start_das_pump(server, cfg: DASConfig) -> None:
         )
         return
     server._das_engine_sleeping = getattr(server, "_das_engine_sleeping", False)
+    server._das_service = None
+    server._das_version = -1
+    server._das_replica_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
+    server._das_buffer = []  # prefetched (to_version, payload) pairs, in order
+    server._das_buffer_bytes = 0
     loop = asyncio.get_running_loop()
     server._das_pump_task = loop.create_task(_das_delta_pump(server, cfg))
-    logger.info("DAS: delta pump started (poll every %.1fs)", cfg.poll_interval_s)
+    logger.info(
+        "DAS: delta pump started (service-side prefetch, poll %.1fs; ALL engine "
+        "applies happen in the wake_up boundary drain — zero mid-decode RPCs)",
+        cfg.poll_interval_s,
+    )
 
 
-async def _das_collective_rpc(server, method: str, payload: bytes):
+async def _das_collective_rpc(server, method: str, payload: bytes | None = None):
     """Call verl's collective_rpc tolerating minor signature drift."""
+    rpc_args = (payload,) if payload is not None else ()
     try:
-        result = server.collective_rpc(method, args=(payload,))
+        result = server.collective_rpc(method, args=rpc_args)
     except TypeError:
-        result = server.collective_rpc(method=method, args=(payload,))
+        result = server.collective_rpc(method=method, args=rpc_args)
     if inspect.isawaitable(result):
         result = await result
     return result
 
 
-async def _das_delta_pump(server, cfg: DASConfig) -> None:
-    """Pull versioned deltas from the central store into all TP workers.
-
-    Runs forever on the vLLMHttpServer actor's event loop. Never lets an
-    error escape: DAS data flow degrades, the engine itself is untouched.
-    """
+def _das_ensure_service(server, cfg: DASConfig) -> bool:
+    if getattr(server, "_das_service", None) is not None:
+        return True
     import ray
 
+    try:
+        server._das_service = ray.get_actor(cfg.service_name, namespace=cfg.service_namespace)
+    except Exception:  # noqa: BLE001
+        # Service not up yet (engines launch before the trainer's manager).
+        return False
+    return True
+
+
+# Prefetch buffer cap: beyond this, leave data at the service until the
+# next boundary rather than growing process0 memory.
+_DAS_BUFFER_CAP_BYTES = 256 * 1024 * 1024
+
+
+async def _das_prefetch_available(server, cfg: DASConfig) -> int:
+    """Pull delta payloads from the service into the local buffer.
+
+    Touches only the service actor — never the engine — so it is safe at
+    any time, including mid-decode.
+    """
     from py_inference_scheduler.speculative.contracts import deserialize_delta_batch
 
-    replica_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
-    service = None
-    version = -1
+    fetched = 0
+    while server._das_buffer_bytes < _DAS_BUFFER_CAP_BYTES:
+        next_version = (
+            server._das_buffer[-1][0] if server._das_buffer else server._das_version
+        )
+        payload = await server._das_service.get_deltas.remote(
+            server._das_replica_id, next_version
+        )
+        if payload is None:
+            return fetched
+        batch = deserialize_delta_batch(payload)
+        server._das_buffer.append((batch.to_version, payload))
+        server._das_buffer_bytes += len(payload)
+        fetched += 1
+    return fetched
+
+
+async def _das_apply_boundary(server, cfg: DASConfig) -> int:
+    """Apply buffered payloads + any remainder. Engine idle: RPCs are cheap.
+
+    The only place engine-side applies ever happen.
+    """
+    await _das_prefetch_available(server, cfg)
+    applied = 0
+    while server._das_buffer:
+        to_version, payload = server._das_buffer.pop(0)
+        server._das_buffer_bytes -= len(payload)
+        await _das_collective_rpc(server, "das_apply_deltas", payload)
+        server._das_version = to_version
+        applied += 1
+    return applied
+
+
+async def _das_delta_pump(server, cfg: DASConfig) -> None:
+    """Service-side prefetch loop. Never touches the engine.
+
+    Payload delivery to the GPU workers happens exclusively in the wake_up
+    boundary drain; this loop just keeps the local buffer warm so the
+    boundary drain is a handful of local applies instead of a fetch storm.
+    """
     errors = 0
     while True:
         try:
-            if getattr(server, "_das_engine_sleeping", False):
-                await asyncio.sleep(1.0)
+            if not _das_ensure_service(server, cfg):
+                await asyncio.sleep(5.0)
                 continue
-            if service is None:
-                try:
-                    service = ray.get_actor(cfg.service_name, namespace=cfg.service_namespace)
-                except Exception:  # noqa: BLE001
-                    # Service not up yet (e.g. engines launch before the
-                    # trainer's manager); keep waiting quietly.
-                    await asyncio.sleep(5.0)
-                    continue
-            payload = await service.get_deltas.remote(replica_id, version)
-            if payload is None:
-                await asyncio.sleep(cfg.poll_interval_s)
-                continue
-            batch = deserialize_delta_batch(payload)
-            await _das_collective_rpc(server, "das_apply_deltas", payload)
-            version = batch.to_version
+            await _das_prefetch_available(server, cfg)
             errors = 0
-            # Loop immediately: the batch may have been size-bounded.
+            await asyncio.sleep(cfg.poll_interval_s)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
             errors += 1
             if errors == 1 or errors % 30 == 0:
-                logger.warning("DAS: delta pump error (%d consecutive): %s", errors, e)
-            service = None
+                logger.warning("DAS: delta prefetch error (%d consecutive): %s", errors, e)
+            server._das_service = None
             await asyncio.sleep(min(30.0, cfg.poll_interval_s * (2 ** min(errors, 4))))

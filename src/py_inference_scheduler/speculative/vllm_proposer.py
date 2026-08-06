@@ -105,9 +105,17 @@ def das_patch_suffix_proposer() -> None:
     logger.info("DAS: SuffixDecodingProposer patched in place")
 
 
-def _das_propose_impl(self, state: DASDrafterState, input_batch, sampled_token_ids):  # noqa: PLR0912
+def _das_propose_impl(self, state: DASDrafterState, input_batch, sampled_token_ids):  # noqa: PLR0912,PLR0915
     """Mirrors the stock propose loop with per-problem trees and budgets."""
     draft_token_ids = []
+    # Occupancy gate: draft only in the collapsed-batch straggler tail;
+    # bookkeeping continues in the bulk phase so trees stay warm.
+    active = sum(1 for s in sampled_token_ids if s)
+    state.last_active_count = active
+    state.rounds_seen += 1
+    tail_open = state.cfg.tail_max_active <= 0 or active <= state.cfg.tail_max_active
+    if not tail_open:
+        state.rounds_gated += 1
     for i, sampled_ids in enumerate(sampled_token_ids):
         if not sampled_ids:
             # Partial prefill: no sampled tokens yet.
@@ -129,7 +137,7 @@ def _das_propose_impl(self, state: DASDrafterState, input_batch, sampled_token_i
             state.on_request_tokens(phash, req_id, sampled_ids)
 
         num_tokens = int(input_batch.num_tokens_no_spec[i])
-        if num_tokens >= self.max_model_len:
+        if not tail_open or num_tokens >= self.max_model_len:
             draft_token_ids.append([])
             continue
 
@@ -166,7 +174,11 @@ def _das_propose_impl(self, state: DASDrafterState, input_batch, sampled_token_i
                 best is None or problem_draft.score >= float(getattr(best, "score", 0.0))
             ):
                 best = problem_draft
-        draft_token_ids.append(list(best.token_ids) if best is not None else [])
+        if best is not None and getattr(best, "token_ids", None):
+            state.drafts_emitted += 1
+            draft_token_ids.append(list(best.token_ids))
+        else:
+            draft_token_ids.append([])
 
     # Requests that left the batch: stock cache cleanup + transient drop.
     active_ids = set(getattr(input_batch, "req_id_to_index", {}) or {})
@@ -293,7 +305,7 @@ def _build_suffix_cache(max_tree_depth: int):
         return None
 
 
-def _das_propose_ngram_impl(  # noqa: C901, PLR0912, PLR0913, PLR0917
+def _das_propose_ngram_impl(  # noqa: C901, PLR0912, PLR0913, PLR0914, PLR0915, PLR0917
     self,
     state: DASDrafterState,
     sampled_token_ids,
@@ -312,6 +324,16 @@ def _das_propose_ngram_impl(  # noqa: C901, PLR0912, PLR0913, PLR0917
     cache = getattr(self, "_das_cache", None)
     drafts = []
     active_ids = set()
+    # Occupancy gate: draft only in the collapsed-batch straggler tail,
+    # where verification has GPU slack to win. Bookkeeping (cache feeds,
+    # transient inserts) continues in the bulk phase so the trees are warm
+    # when the tail arrives.
+    active = sum(1 for s in sampled_token_ids if s)
+    state.last_active_count = active
+    state.rounds_seen += 1
+    tail_open = cfg.tail_max_active <= 0 or active <= cfg.tail_max_active
+    if not tail_open:
+        state.rounds_gated += 1
     for i, sampled_ids in enumerate(sampled_token_ids):
         req_id = req_ids[i]
         if req_id is not None:
@@ -334,7 +356,7 @@ def _das_propose_ngram_impl(  # noqa: C901, PLR0912, PLR0913, PLR0917
         if phash is not None:
             state.on_request_tokens(phash, req_id, sampled_ids)
 
-        if num_tokens >= self.max_model_len:
+        if not tail_open or num_tokens >= self.max_model_len:
             drafts.append([])
             continue
         observed = max(0, num_tokens - baseline)
@@ -369,7 +391,11 @@ def _das_propose_ngram_impl(  # noqa: C901, PLR0912, PLR0913, PLR0917
                 best is None or problem_draft.score >= float(getattr(best, "score", 0.0))
             ):
                 best = problem_draft
-        drafts.append(list(best.token_ids) if best is not None else [])
+        if best is not None and best.token_ids:
+            state.drafts_emitted += 1
+            drafts.append(list(best.token_ids))
+        else:
+            drafts.append([])
 
     state.drop_departed(active_ids)
     if cache is not None:

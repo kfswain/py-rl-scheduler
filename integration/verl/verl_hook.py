@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import uuid
 from collections import OrderedDict
 
@@ -232,6 +233,27 @@ class _SchedulerCore:
         if self.das is not None and phash is not None:
             self.das.record_completion(phash, output, prompt_len, server_id)
 
+    def das_sampling_overrides(self, sampling_params: object) -> None:
+        """Strip logprobs so vLLM does not exclude the request from spec decode.
+
+        vLLM (v0.11.0 is_spec_decode_unsupported) disables speculation for any
+        request with logprobs set; verl's agent loop requests them
+        unconditionally even when the trainer recomputes old log-probs with
+        the actor (the default). Gated by das.strip_rollout_logprobs, or
+        explicitly either way via PYIS_STRIP_ROLLOUT_LOGPROBS=1/0 (usable
+        with DAS off, e.g. a stock-spec-decode baseline arm).
+        """
+        env = os.environ.get("PYIS_STRIP_ROLLOUT_LOGPROBS")
+        if env is not None:
+            strip = env == "1"
+        else:
+            strip = self.das is not None and getattr(
+                self.das.cfg, "strip_rollout_logprobs", False
+            )
+        if strip and isinstance(sampling_params, dict):
+            # verl's server maps falsy -> logprobs=None (spec-decode eligible).
+            sampling_params["logprobs"] = False
+
     async def schedule(self, request_id: str, prompt_ids: list[int] | None) -> Endpoint | None:
         """Refresh metrics and pick an endpoint; None means fall back to verl's LB.
 
@@ -319,6 +341,7 @@ if _VERL_LAYOUT == "legacy":
                 sampling_params["ignore_eos"] = ignore_eos
             elif hasattr(sampling_params, "ignore_eos"):
                 sampling_params.ignore_eos = ignore_eos
+            self.core.das_sampling_overrides(sampling_params)
 
             phash, engine_request_id = self.core.das_request_id(request_id, prompt_ids)
             try:
@@ -439,6 +462,7 @@ else:  # modern layout
             ignore_eos = self.rollout_config.get("ignore_eos", False)
             if isinstance(sampling_params, dict):
                 sampling_params["ignore_eos"] = ignore_eos
+            self.core.das_sampling_overrides(sampling_params)
 
             multimodal_kwargs: dict[str, object] = {}
             if audio_data is not None:

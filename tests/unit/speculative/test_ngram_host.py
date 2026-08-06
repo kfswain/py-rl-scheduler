@@ -141,3 +141,52 @@ def test_budget_capped_by_host_k_and_model_len():
         host, state, [[MOTIF[2]]], req_ids, num_tokens, token_ids, set()
     )
     assert drafts == [[]]
+
+
+def test_bulk_phase_gates_drafting_but_keeps_collecting():
+    state = make_state(tail_max_active=4)
+    phash = hash_problem_id(PROMPT)
+    seed_problem(state, phash)
+    host = make_host(state)
+    req_ids = [encode_request_id(phash) for _ in range(6)]  # 6 active > gate 4
+    num_tokens, token_ids = make_batch_args(req_ids)
+
+    drafts = _das_propose_ngram_impl(
+        host, state, [[MOTIF[2]]] * 6, req_ids, num_tokens, token_ids, set()
+    )
+    assert all(d == [] for d in drafts)
+    assert state.rounds_gated == 1
+    assert state.last_active_count == 6
+    # Transient self-inserts still happened: trees stay warm for the tail.
+    assert state.tree_stats()["transient_requests"] == 6
+
+
+def test_tail_phase_drafts_below_threshold():
+    state = make_state(tail_max_active=4)
+    phash = hash_problem_id(PROMPT)
+    seed_problem(state, phash)
+    host = make_host(state)
+    req_ids = [encode_request_id(phash) for _ in range(2)]
+    num_tokens, token_ids = make_batch_args(req_ids)
+
+    drafts = _das_propose_ngram_impl(
+        host, state, [[MOTIF[2]]] * 2, req_ids, num_tokens, token_ids, set()
+    )
+    assert all(d[:3] == MOTIF[3:6] for d in drafts)
+    assert state.rounds_gated == 0
+    assert state.drafts_emitted == 2
+
+
+def test_gate_disabled_when_zero():
+    state = make_state(tail_max_active=0)
+    phash = hash_problem_id(PROMPT)
+    seed_problem(state, phash)
+    host = make_host(state)
+    req_ids = [encode_request_id(phash) for _ in range(16)]
+    num_tokens, token_ids = make_batch_args(req_ids)
+
+    drafts = _das_propose_ngram_impl(
+        host, state, [[MOTIF[2]]] * 16, req_ids, num_tokens, token_ids, set()
+    )
+    assert all(d[:3] == MOTIF[3:6] for d in drafts)
+    assert state.rounds_gated == 0

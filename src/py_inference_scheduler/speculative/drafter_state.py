@@ -217,6 +217,11 @@ class DASDrafterState:
         self._version = -1
         self.applied_batches = 0
         self.snapshots_applied = 0
+        # Occupancy + attribution counters (set by the patched propose).
+        self.last_active_count = -1
+        self.rounds_seen = 0
+        self.rounds_gated = 0
+        self.drafts_emitted = 0
 
     # -------------------------------------------------------------- deltas
 
@@ -341,6 +346,10 @@ class DASDrafterState:
             "transient_requests": len(self._transients),
             "applied_batches": self.applied_batches,
             "snapshots_applied": self.snapshots_applied,
+            "last_active_count": self.last_active_count,
+            "rounds_seen": self.rounds_seen,
+            "rounds_gated": self.rounds_gated,
+            "drafts_emitted": self.drafts_emitted,
         }
 
 

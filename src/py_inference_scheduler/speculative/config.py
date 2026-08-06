@@ -101,6 +101,17 @@ class DASConfig:
     poll_interval_s: float = 2.0
     max_delta_batch_tokens: int = 500_000
     reset_on_weight_update: bool = False
+    # vLLM excludes any request with logprobs from speculative decoding
+    # (v0.11.0 is_spec_decode_unsupported), and verl's agent loop requests
+    # them unconditionally. Safe to strip when rollout logprobs are unused
+    # (verl's default: the trainer recomputes old log-probs with the actor).
+    # Set false if you train with actor_rollout_ref.rollout.calculate_log_probs=True.
+    strip_rollout_logprobs: bool = True
+    # Speculate (and apply mid-rollout deltas) only when the engine's active
+    # decode batch has collapsed to at most this many requests — the
+    # straggler-tail regime where the GPU has slack for verification and
+    # per-problem trees are warmest. 0 disables the gate (always speculate).
+    tail_max_active: int = 8
     service_name: str = "pyis_das_suffix_service"
     service_namespace: str = "pyis"
     budgets: DASBudgetConfig = field(default_factory=DASBudgetConfig)
@@ -124,6 +135,8 @@ def _build(section: dict) -> DASConfig:
         poll_interval_s=float(section.get("poll_interval_s", 2.0)),
         max_delta_batch_tokens=int(section.get("max_delta_batch_tokens", 500_000)),
         reset_on_weight_update=bool(section.get("reset_on_weight_update")),
+        strip_rollout_logprobs=bool(section.get("strip_rollout_logprobs", True)),
+        tail_max_active=int(section.get("tail_max_active", 8)),
         service_name=str(section.get("service_name", "pyis_das_suffix_service")),
         service_namespace=str(section.get("service_namespace", "pyis")),
         budgets=DASBudgetConfig(
