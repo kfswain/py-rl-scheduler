@@ -142,3 +142,133 @@ mismatch means a replica needs snapshot resync and should be reported.
   The standard verl topology (DP = separate replicas) is fully supported.
 - SGLang: not yet (no upstream suffix drafter to feed).
 - Recency weighting is the 2x-shadow approximation, not a tunable decay.
+
+## Benchmark results (2026-08, GKE H100/H200)
+
+Setup: verl 0.9.0.dev + vLLM 0.11.0 (ngram host), Qwen3-4B, DeepScaleR,
+GRPO n=8, batch 64, max_response 4096, T=1.0, TP=1, 16 engines across two
+8-GPU nodes, py-inference-scheduler routing in every arm. 10 training
+steps per arm; all arms strip rollout logprobs identically. Speculative
+decoding is lossless — reward curves were statistically indistinguishable
+across every arm throughout.
+
+### No-repeat ladder (each problem seen once)
+
+| Arm | Config | timing_s/gen | Drafted/round | Accepted/round | Acceptance |
+|---|---|---|---|---|---|
+| A2 | no spec decode | 46.8 | — | — | — |
+| B3 | stock ngram, k=4 | 41.2 | ~4 (blind) | ~1 | low |
+| C5 | DAS, ungated | 42.1 | 5.94 | 0.85 | 14.2% |
+
+With no problem repetition the central store cannot contribute (trees ship
+after their problem's only appearance), so C5 vs B3 isolates drafting
+policy: DAS matches the best cheap drafter while drafting a fraction of
+the tokens. For contrast, stock ngram misconfigured at k=24 drafted 23.5
+tokens/round at 4.6% acceptance and *lost* to no-spec.
+
+### Epoch run (128 problems x 5 epochs, 2 steps/epoch)
+
+| Arm | timing_s/gen avg | Cold (steps 1-2) | Warm (steps 3-10) |
+|---|---|---|---|
+| A2e | 47.8 (flat all run) | ~47.7 | ~47.8 |
+| C5e | **37.8 (-21%)** | 43.3 (-9%) | **36.4 (-24%)** |
+
+The inflection lands exactly at step 3 — the first step where problems
+recur and per-problem trees hold prior-epoch trajectories. Acceptance
+rose from 14.2% (no-repeat) to 18.7% with accepted-tokens-per-round up
+73% (0.85 -> 1.47): warmer trees make drafts longer and better
+simultaneously (the paper's Fig. 4 dynamic). A2e's flat curve is the
+control proving the drop is decode speedup, not training-induced length
+shrinkage. Best warm steps reached -29%; acceptance was still climbing at
+epoch 5.
+
+### End-to-end accounting (Amdahl)
+
+Generation was only ~17% of the 229s training step in this configuration
+(small model, conservative micro-batches), so the 21% generation win
+passes through as only ~+3.3% whole-step throughput (523 -> 541
+tok/s/GPU) and near-zero total job time delta. The dilution is a property
+of the benchmark's shape, not the mechanism: at the DAS paper's
+rollout-dominant shape (70%+ of step), the same 1.3x generation speedup
+projects to ~20%+ end-to-end. Deploy where rollout dominates the step;
+judge DAS by `timing_s/gen` (or rollout tokens/sec), not whole-step
+throughput.
+
+### Routing x DAS (homogeneous H200 ladder, epoch config)
+
+After pinning workers to H200s (heterogeneous fleets make load-blind
+routing turn slower GPUs into systematic stragglers): A3 no-spec 39.2
+s/step | C5e2 backpressure+DAS **35.3** | C6b prefix-only+DAS 43.5
+(degrading across epochs: sticky problem->engine assignment compounds
+length skew with no rebalancing valve). Acceptance: 18.5% vs 19.2% —
+sibling co-location buys almost nothing because the central store ships
+cross-epoch trees to every engine regardless; affinity only accelerates
+the same-step transient window. **Verdict: keep the backpressure-dominant
+profile; do not trade load balance for affinity.** Also note: H200s
+compressed DAS's warm-epoch margin from 24% (mixed fleet) to ~12% —
+faster decode rounds, unchanged Python propose overhead; propose-path
+batching is the recovery lever, or larger models (round cost grows,
+overhead doesn't).
+
+### Paper-scale run (Qwen3-32B, TP=2, 16k response cap)
+
+A4 no-spec 269.5 s/step (reward 0.670) vs C7 DAS **214.1 (-20.5%)**
+(reward 0.711; run variance). Margin expanded from ~12% (4B) to ~20.5%
+(32B) on identical hardware — costlier decode rounds amortize the fixed
+propose-path overhead — despite *lower* acceptance (15.6% vs 18.5%):
+at scale, value-per-accepted-token beats acceptance rate. TP=2 delta
+delivery ran clean (zero rank resyncs; identical per-pod counters). The
+epoch warm-up flattens at 16k: own-context self-repetition and same-step
+sibling reuse dominate, so cross-epoch trees add proportionally less.
+Caveat: colocated 32B training (micro-batch 1) pushed total step to ~25
+min, so rollout share — and thus end-to-end gain — stayed small; the
+generation win transfers fully only where rollout dominates the step.
+
+### Deep-epoch run (Qwen3-32B, DeepMath-103K band 4-7, 16k cap, 10 epochs)
+
+A5 no-spec 247.9 s/step gen (flat) vs C8 DAS **183.5 avg (-26%)**: -17%
+in the cold first epoch rising to **-28% steady-state** (best steps -37%)
+as trees accumulate up to 80 trajectories/problem — inside the DAS
+paper's 25-50% band, at T=1.0 on a non-distilled model. Acceptance 16.5%
+(8.4 drafted / 1.38 accepted per round; ceiling 24 never binds — the
+match-length cap and min_token_prob govern). Rewards equivalent (0.885
+vs 0.906 mean; both arms approach ~1.0 on the repeated subset —
+train-reward inflation from repetition, use held-out eval for learning
+claims). KNOWN LEAK, fix designed: total step time barely moved because
+~47s/step leaked back into training-phase timings — the pump's
+engine-side sleep gate never fires on verl 0.9 colocated (verl sleeps
+engines outside vLLMHttpServer.sleep), and tail_max_active=0 un-gates
+mid-decode applies (knob coupling). Fix: service-side per-iteration
+delta serving (get_deltas withholds until iteration advances) + separate
+apply-gate knob; also shrink window_iterations to cap resident tree RAM
+in worker processes.
+
+### Benchmarking traps (all hit while producing these numbers)
+
+1. **Logprobs silently disable speculation.** vLLM excludes any request
+   with `logprobs` set (`is_spec_decode_unsupported`), and verl's agent
+   loop requests them unconditionally. Every spec arm drafts *zero* tokens
+   until stripped (`PYIS_STRIP_ROLLOUT_LOGPROBS=1`; safe when the trainer
+   recomputes old log-probs, verl's default). Check
+   `vllm:spec_decode_num_drafts > 0` before believing any spec benchmark.
+2. **`/tmp/metrics` multiproc residue compounds across jobs.** Dead
+   engines' prometheus files survive on the pod; every `/metrics` scrape
+   aggregates all of them, and the scheduler scrapes per request. 600+
+   dead files inflated the baseline from 46.8 to 70.5 s/step and grew
+   every run. Now auto-cleaned at engine launch (dead-PID check in
+   `VllmEnginePatch`); the old ladder's absolutes were unusable.
+3. **Back-to-back jobs race GPU teardown.** Submitting within seconds of
+   the prior job's exit hits verl's resource check or CUDA OOM during
+   engine init. Sequencers settle 180s between jobs.
+4. **Replacement pods come up blank.** GKE pod churn silently removes
+   verl (editable at /tmp/verl), arctic, and datasets; jobs then die in
+   60s before reaching wandb. Re-provision from a healthy sibling pod.
+5. **Occupancy-gating drafting was a net loss here.** Decode at these
+   batch sizes is memory-bound (roofline crossover ~batch 300 for a 4B
+   model on H100), so drafting pays all step, not just in the straggler
+   tail — `tail_max_active: 0` (always draft) is the right default; a
+   positive gate is for compute-bound regimes only.
+6. **Never let the data plane touch the decode loop.** Mid-decode
+   `collective_rpc` (payloads *or* polling) costs several s/step; all
+   tree delivery now happens in a fire-and-forget drain at the wake_up
+   boundary, overlapping prefill.

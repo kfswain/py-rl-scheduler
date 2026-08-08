@@ -80,6 +80,12 @@ spec:
       num-gpus: '8'
     template:
       spec:
+        # Pin all rollout workers to one accelerator type. Heterogeneous
+        # workers (H100 + H200 mix) skew scheduling experiments: load-blind
+        # routing policies turn the slower GPUs into systematic stragglers,
+        # and per-step timings become topology-dependent.
+        nodeSelector:
+          cloud.google.com/gke-accelerator: nvidia-h200-141gb
         initContainers:
         - name: data-downloader
           image: google/cloud-sdk:slim

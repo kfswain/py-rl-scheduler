@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import pathlib
 import socket
 import uuid
 
@@ -49,6 +50,7 @@ class VllmEnginePatch:
                 metrics_dir = os.environ.get('PROMETHEUS_MULTIPROC_DIR', '/tmp/metrics')  # noqa: S108
                 os.makedirs(metrics_dir, exist_ok=True)  # noqa: PTH103
                 os.environ['PROMETHEUS_MULTIPROC_DIR'] = metrics_dir
+                _clean_dead_multiproc_files(metrics_dir)
                 return await original_launch(self, *args, **kwargs)
 
             vLLMHttpServer.launch_server = patched_launch
@@ -112,22 +114,50 @@ class VllmEnginePatch:
             async def das_wake_up(self, *args, **kwargs):
                 result = await original_wake(self, *args, **kwargs)
                 self._das_engine_sleeping = False
-                # Boundary drain: ship everything the last iteration produced
-                # now, while the engine is awake but idle — the rollout that
-                # is about to start never pays mid-decode apply stalls.
-                try:
-                    if getattr(self, "_das_replica_id", None) and _das_ensure_service(self, cfg):
-                        applied = await _das_apply_boundary(self, cfg)
-                        if applied:
-                            logger.info("DAS: boundary drain applied %d batches", applied)
-                except Exception:
-                    logger.exception("DAS: boundary drain failed; next boundary catches up")
+                # Boundary drain, fire-and-forget: applies overlap the
+                # rollout's prefill phase instead of blocking its start.
+                prior = getattr(self, "_das_drain_task", None)
+                if (
+                    getattr(self, "_das_replica_id", None)
+                    and (prior is None or prior.done())
+                    and _das_ensure_service(self, cfg)
+                ):
+                    self._das_drain_task = asyncio.get_running_loop().create_task(
+                        _das_boundary_drain_bg(self, cfg)
+                    )
                 return result
 
             http_server_cls.wake_up = das_wake_up
 
         http_server_cls._das_patched = True
         logger.info("DAS: vLLMHttpServer patched (worker extension + delta pump)")
+
+
+def _clean_dead_multiproc_files(metrics_dir: str) -> None:
+    """Remove prometheus multiproc files left by dead processes.
+
+    The multiproc dir is shared pod state that survives jobs; every scrape
+    aggregates ALL files, so dead-job residue makes /metrics slower for
+    every subsequent run (and the scheduler scrapes per request). Files of
+    live pids (concurrently launching sibling engines) are untouched.
+    """
+    import re
+
+    removed = 0
+    try:
+        for path in pathlib.Path(metrics_dir).iterdir():
+            m = re.match(r".+_(\d+)\.db$", path.name)
+            if m and not pathlib.Path(f"/proc/{m.group(1)}").exists():
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+    except OSError as e:
+        logger.warning("multiproc cleanup skipped: %s", e)
+        return
+    if removed:
+        logger.info("cleaned %d dead prometheus multiproc files from %s", removed, metrics_dir)
 
 
 def _detect_dp_size(server) -> int:
@@ -231,6 +261,15 @@ async def _das_prefetch_available(server, cfg: DASConfig) -> int:
         server._das_buffer_bytes += len(payload)
         fetched += 1
     return fetched
+
+
+async def _das_boundary_drain_bg(server, cfg: DASConfig) -> None:
+    try:
+        applied = await _das_apply_boundary(server, cfg)
+        if applied:
+            logger.info("DAS: boundary drain applied %d batches", applied)
+    except Exception:
+        logger.exception("DAS: boundary drain failed; next boundary catches up")
 
 
 async def _das_apply_boundary(server, cfg: DASConfig) -> int:

@@ -1,0 +1,14 @@
+# Pure prefix-affinity routing: sibling co-location experiment for DAS.
+# One scorer, no load balancing — GRPO siblings (identical prompts) always
+# follow the first sibling's engine, so per-problem transient trees see all
+# 8 siblings live. Novel prompts fall back to the least-indexed engine,
+# which spreads problems roughly evenly as indexes grow.
+profile_handler:
+  type: single_profile
+profiles:
+  prefix_only:
+    scorers:
+      - type: prefix_cache
+        weight: 1.0
+    picker:
+      type: max_score

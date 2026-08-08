@@ -107,11 +107,11 @@ class DASConfig:
     # (verl's default: the trainer recomputes old log-probs with the actor).
     # Set false if you train with actor_rollout_ref.rollout.calculate_log_probs=True.
     strip_rollout_logprobs: bool = True
-    # Speculate (and apply mid-rollout deltas) only when the engine's active
-    # decode batch has collapsed to at most this many requests — the
-    # straggler-tail regime where the GPU has slack for verification and
-    # per-problem trees are warmest. 0 disables the gate (always speculate).
-    tail_max_active: int = 8
+    # Occupancy gate: 0 (default) drafts every round — decode is memory-
+    # bound at these batch sizes, so verification has slack all step.
+    # Positive values confine drafting to the collapsed-batch tail, for
+    # compute-bound regimes only.
+    tail_max_active: int = 0
     service_name: str = "pyis_das_suffix_service"
     service_namespace: str = "pyis"
     budgets: DASBudgetConfig = field(default_factory=DASBudgetConfig)
@@ -136,7 +136,7 @@ def _build(section: dict) -> DASConfig:
         max_delta_batch_tokens=int(section.get("max_delta_batch_tokens", 500_000)),
         reset_on_weight_update=bool(section.get("reset_on_weight_update")),
         strip_rollout_logprobs=bool(section.get("strip_rollout_logprobs", True)),
-        tail_max_active=int(section.get("tail_max_active", 8)),
+        tail_max_active=int(section.get("tail_max_active", 0)),
         service_name=str(section.get("service_name", "pyis_das_suffix_service")),
         service_namespace=str(section.get("service_namespace", "pyis")),
         budgets=DASBudgetConfig(

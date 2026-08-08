@@ -24,11 +24,12 @@ das:
   max_spec_factor: 2.0
   min_token_prob: 0.1
 
-  # Speculate (and apply mid-rollout deltas) only when the engine's active
-  # decode batch has collapsed to at most this many requests: the
-  # straggler-tail regime where the GPU has verification slack and the
-  # per-problem trees are warmest. 0 disables the gate.
-  tail_max_active: 8
+  # Occupancy gate: 0 = draft every round (default). Measured on H100/H200
+  # with a 4B model, decode is memory-bound even at full batch, so drafting
+  # pays throughout the step (arm B3 vs A2); budgets + min_token_prob do the
+  # waste control. Set a positive threshold only for compute-bound regimes
+  # (large models / big batches) to confine drafting to the straggler tail.
+  tail_max_active: 0
 
   # Engine delta-pump poll cadence. The bulk of tree data ships in the
   # wake_up boundary drain (engine idle); mid-rollout polls only top up
