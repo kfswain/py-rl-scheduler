@@ -72,6 +72,9 @@ spec:
           configMap:
             name: scheduler-config
   workerGroupSpecs:
+  # Rollout (sampling) pool: H200-only. Homogeneity is a benchmarking
+  # invariant (see docs/das_speculative_decoding.md traps) and the pool the
+  # scheduler routes to.
   - replicas: 2
     minReplicas: 2
     maxReplicas: 2
@@ -159,3 +162,77 @@ spec:
         annotations:
           networking.gke.io/default-interface: eth0
           networking.gke.io/interfaces: "[\n  {\"interfaceName\":\"eth0\",\"network\"\n            :\"default\"},\n  {\"interfaceName\":\"eth1\",\"network\":\"gvnic-1\"\n            },\n  {\"interfaceName\":\"eth2\",\"network\":\"rdma-0\"},\n  {\"interfaceName\"\n            :\"eth3\",\"network\":\"rdma-1\"},\n  {\"interfaceName\":\"eth4\",\"network\"\n            :\"rdma-2\"},\n  {\"interfaceName\":\"eth5\",\"network\":\"rdma-3\"},\n  {\"interfaceName\":\"eth6\",\"network\":\"rdma-4\"},\n  {\"interfaceName\"\n            :\"eth7\",\"network\":\"rdma-5\"},\n  {\"interfaceName\":\"eth8\",\"network\"\n            :\"rdma-6\"},\n  {\"interfaceName\":\"eth9\",\"network\":\"rdma-7\"}\n            ]\n"
+  # Trainer pool for disaggregated (fully-async) runs: the 3 idle
+  # H100-mega nodes hold FSDP training only; rollout stays on the H200
+  # pool above and engines never sleep. Pool separation is enforced at the
+  # Ray level via accelerator_type bundle pinning (see
+  # integration/verl/fully_async_das.py). Single-NIC nodes: no RDMA
+  # annotations, no gib mount.
+  - replicas: 3
+    minReplicas: 3
+    maxReplicas: 3
+    groupName: trainer-group
+    rayStartParams:
+      num-gpus: '8'
+    template:
+      spec:
+        nodeSelector:
+          cloud.google.com/gke-accelerator: nvidia-h100-mega-80gb
+        containers:
+        - name: ray-worker
+          image: verlai/verl:vllm011.latest
+          imagePullPolicy: Always
+          env:
+          - name: HUGGING_FACE_HUB_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: hf-secret
+                key: hf_api_token
+          - name: WANDB_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: wandb-secret
+                key: api-token
+          - name: LD_LIBRARY_PATH
+            value: /usr/local/nvidia/lib64
+          resources:
+            limits:
+              cpu: '64'
+              memory: 1024Gi
+              nvidia.com/gpu: '8'
+            requests:
+              cpu: '64'
+              memory: 1024Gi
+              nvidia.com/gpu: '8'
+          volumeMounts:
+          - mountPath: /tmp/ray
+            name: ray-tmp
+          - mountPath: /dev/shm
+            name: dshm
+          - mountPath: /usr/local/nvidia
+            name: nvidia
+          - mountPath: /tmp/metrics
+            name: metrics-dir
+          - mountPath: /etc/scheduler
+            name: scheduler-vol
+          - mountPath: /home/ray/data
+            name: data
+        volumes:
+        - name: ray-tmp
+          emptyDir: {}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+        - name: nvidia
+          hostPath:
+            path: /home/kubernetes/bin/nvidia
+        - name: metrics-dir
+          emptyDir: {}
+        - name: scheduler-vol
+          configMap:
+            name: scheduler-config
+        - name: data
+          emptyDir: {}
+        metadata:
+        annotations:
+          networking.gke.io/default-interface: eth0

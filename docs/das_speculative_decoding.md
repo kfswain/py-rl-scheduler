@@ -130,10 +130,13 @@ verl build; verified on 0.9.x.
 ## Observability
 
 `SuffixDataService.get_metrics()` (via any Ray client): iteration, log
-version, problem count, total tokens, per-replica lag, pushes received,
-snapshots served. Engine-side `das_get_tree_stats` (collective_rpc): tree
-count, transient count, applied batches, state version — cross-rank version
-mismatch means a replica needs snapshot resync and should be reported.
+version, servable version + withheld entry count (per-iteration serving),
+problem count, total tokens, per-replica lag, pushes received, snapshots
+served. Engine-side `das_get_tree_stats` (collective_rpc): tree count,
+transient count, applied batches, state version, `tree_memory_bytes`
+(arctic estimate_memory over per-problem trees) and
+`engine_cache_memory_bytes` — cross-rank version mismatch means a replica
+needs snapshot resync and should be reported.
 
 ## Known limits (v1)
 
@@ -243,6 +246,201 @@ delta serving (get_deltas withholds until iteration advances) + separate
 apply-gate knob; also shrink window_iterations to cap resident tree RAM
 in worker processes.
 
+### Deep-epoch run (DeepMath-103K, difficulty 4-7, 128 problems x 10 epochs)
+
+Qwen3-32B, TP=2, 16k cap, 40 steps/arm: A5 no-spec 247.9 s/step (flat all
+run) vs C8 DAS **183.5 (-26%)**; epoch 1 (cold) -17%, epoch 10 steady
+state **-28%**, best steps -37% — inside the paper's 25-50% band at
+T=1.0 on a non-distilled model. Acceptance 16.5% cumulative (8.4 drafted
+/ 1.38 accepted per round; the 24-token ceiling never binds — match-length
+scaling and min_token_prob govern). Harder problems nearly doubled
+response lengths vs DeepScaleR (~6.9k avg, 4-6% clipped at 16k),
+confirming length — not dataset size — as the DAS-value lever. Train
+reward reached ~0.9+ on the repeated subset (memorization; enable
+test_freq for learning-quality claims).
+
+### The training-window leak (~47 s/step) — fixes (a)-(d) implemented 2026-08-10
+
+C8's gen win largely vanishes from step totals: gen -56s but
+old_log_prob +5s and update_actor +42s (phase ledger, matched steps).
+Evidence chain: offset does NOT track tokens (C8 shorter/thinner-tailed
+at matched steps); replica lag sampled 0 throughout training (deliveries
+complete before update_actor, so it is not active DAS work); two config
+bugs confirmed — (1) the pump's sleep-gate hooks vLLMHttpServer.sleep,
+which verl 0.9 colocated never calls, and (2) tail_max_active=0 (set to
+un-gate drafting) also silently un-gated mid-decode delta applies (one
+knob fed both). Remaining update_actor suspect: passive residency —
+measured 280 B/token (arctic estimate_memory; random-token upper bound,
+real CoT compresses better) x 30.6M window tokens x 8 tree-holding
+processes/node, plus the engine-local SuffixDecodingCache global tree
+(10k-request cap ~= 70M tokens) => plausibly 50-150 GB of suffix
+structures resident per training node.
+
+Fixes — (a)-(d) IMPLEMENTED 2026-08-10 (all 70 unit tests +
+das_compat_check green; validated on-cluster by the disaggregated A7/C10
+pair below — the +42s update_actor offset collapsed to +7s):
+(a) service-side per-iteration serving — `get_deltas` withholds every
+log entry from the in-progress iteration (`_servable_version` advances
+only in `begin_iteration`), so applies land exactly once per step at the
+rollout boundary, independent of verl sleep internals; snapshots exclude
+current-iteration sequences and set `to_version` to the servable ceiling
+so withheld adds still arrive incrementally after a resync;
+(b) `apply_on_poll` (default true) is the delta-apply gate — the pump
+applies servable batches as it fetches them (boundary-aligned by (a),
+landing in the prefill window), and `tail_max_active` is drafting-only;
+the wake_up drain remains as a belt-and-braces flush; the dead
+vLLMHttpServer.sleep hook was removed;
+(c) `das_get_tree_stats` now reports `tree_memory_bytes` (arctic
+`estimate_memory()` summed over per-problem trees) and
+`engine_cache_memory_bytes` (best-effort sweep of the request-scoped
+cache), and service metrics gained `das_servable_version` /
+`das_withheld_entries`;
+(d) `engine_cache_max_requests: 2000` caps the engine-local
+SuffixDecodingCache in both hosts (the ngram host builds it capped; the
+suffix host rebuilds the stock cache at init, when it is still empty),
+and the shipped config drops `window_iterations` 16 -> 8 (halves
+resident window tokens; ~280 B/token measured).
+Still open: (e) ppo_micro_batch_size_per_gpu=4 probe to halve
+update_actor (H200 headroom is ample), which also doubles rollout's
+Amdahl share — a launch flag, not a code change.
+
+Trade-off accepted with (a): cross-ENGINE same-step sibling sharing is
+gone (data ships one boundary later). The routing A/B already showed
+same-step affinity buys almost nothing (18.5% vs 19.2% acceptance);
+same-engine siblings still share instantly via transient self-inserts.
+
+### Disaggregated run (2026-08-12): fully-async, H100 trainers / H200 rollout
+
+Setup: verl `experimental.fully_async_policy` (separate resource pools,
+checkpoint-engine NCCL weight sync), Qwen3-32B, DeepMath 128 problems x 10
+epochs, 16k cap, batch 32, n=8, 40 steps/arm — the C8 recipe on a split
+topology. Training: 16 H100-80GB (2 nodes, fsdp2, micro-batch 1; the third
+H100 node idles — 256 trajectories/step % 24 != 0). Rollout: 16 H200 (8
+standalone TP=2 engines that never sleep). Pools pinned via
+`accelerator_type` bundle resources; scheduler routing + DAS ride in
+through `integration.verl.fully_async_das.setup`
+(`worker_process_setup_hook`). Lockstep pipeline
+(`trigger_parameter_sync_step=1`, `staleness_threshold=0`,
+`partial_rollout=True`): fully on-policy, zero gen/train overlap — the
+closest fully-async analog of the synchronous trainer. Launch: `bash
+run_das_disagg.sh` (arm C adds the ngram-host speculative_config +
+`PYIS_DAS_ENABLED=1`); jobs `armA7-disagg` / `armC10-disagg` via
+sequence9.
+
+| Metric (steps 1-40 mean) | A7 no-spec | C10 DAS | delta |
+|---|---|---|---|
+| timing_s/gen | 234.4 | 194.5 | **-17.0%** |
+| gen us/token (length-normalized) | 158.0 | 119.4 | **-24.4%** |
+| perf/throughput (tok/s/GPU) | 28.6 | 32.0 | +12.0% |
+| timing_s/step | 1619.5 | 1588.0 | -1.9% |
+| timing_s/update_actor | 1178.7 | 1185.9 | +7.2s |
+| timing_s/old_log_prob | 156.7 | 158.2 | +1.5s |
+
+Acceptance: 225.4M drafted / 36.0M accepted = 8.00 drafted + 1.28
+accepted per round, 15.9% — matching C8's 16.5% despite the topology
+change. Rewards 0.921 vs 0.907 (parity; lossless as always). DAS service
+closed clean: iteration 40, replica lag 0, all 10,240 pushes received,
+zero snapshot resyncs.
+
+Readouts:
+
+- **Per-token generation speedup reproduces colocated C8** (-24.4% vs
+  -26%): C10 happened to sample ~10% longer responses (6,270 vs 5,708
+  mean; T=1.0 run variance — rewards match), so the raw -17% understates
+  the mechanism. Judge by us/token or acceptance, not raw timing, when
+  response lengths drift between arms.
+- **The training-window leak is GONE — residency hypothesis confirmed.**
+  Colocated C8 leaked ~47 s/step into training phases; here, with trees
+  resident only in H200 engine processes, update_actor's offset is +7.2s
+  (and *cheaper per token* — C10 pushed ~10% more tokens through it) and
+  old_log_prob +1.5s. Fixes (a)-(d) + topology close the books on the
+  leak.
+- **Step time barely moves by construction**: update_actor (~1,180s at
+  micro-batch 1 on 16 H100s) is ~73% of the step, gen ~14.5%, and
+  lockstep staleness=0 leaves generation unhidden (rollouter idle ratio
+  0.86). To convert DAS's gen win into wall-clock at this shape:
+  staleness > 0 hides generation entirely (DAS then buys rollout-GPU
+  headroom instead of step time), and the micro-batch probe (e) attacks
+  the denominator.
+
+### Reproducing the C8 run (DeepMath deep-epoch DAS arm)
+
+From the Ray head pod, with the repo staged at /tmp/das_repo and the
+dataset at /home/ray/data/deepmath (see prepare_deepmath.py). Kill any
+stale service first, then submit:
+
+```bash
+# fresh trajectory store (per-arm hygiene)
+RAY_ADDRESS=auto python3 -c "
+import ray
+ray.init(namespace='pyis', ignore_reinit_error=True)
+try: ray.kill(ray.get_actor('pyis_das_suffix_service', namespace='pyis'))
+except ValueError: pass"
+
+cd /tmp/das_repo && ray job submit --no-wait --working-dir /tmp/das_repo \
+  --runtime-env-json '{"env_vars":{"PYTHONPATH":".:./src","PROMETHEUS_MULTIPROC_DIR":"/tmp/metrics","ROUTER_CONFIG_PATH":"./integration/verl/examples/scheduler.yaml","PYIS_DAS_ENABLED":"1","DAS_CONFIG_PATH":"./configs/das_config.yaml","PYIS_STRIP_ROLLOUT_LOGPROBS":"1","PYTHONUNBUFFERED":"1"}}' \
+  -- bash run_das_wandb.sh \
+    actor_rollout_ref.model.path=Qwen/Qwen3-32B \
+    actor_rollout_ref.rollout.tensor_model_parallel_size=2 \
+    data.train_batch_size=32 \
+    data.max_response_length=16384 \
+    actor_rollout_ref.actor.ppo_mini_batch_size=16 \
+    actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1 \
+    actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=2 \
+    actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=2 \
+    data.train_max_samples=128 \
+    trainer.total_training_steps=40 \
+    data.train_files=/home/ray/data/deepmath/train.parquet \
+    data.val_files=/home/ray/data/deepmath/test.parquet \
+    trainer.experiment_name=armC8_32b_deepmath_das
+```
+
+The baseline arm (A5) is identical minus DAS: use run_das_a2.sh (no
+speculative_config), drop PYIS_DAS_ENABLED/DAS_CONFIG_PATH from env_vars
+(keep PYIS_STRIP_ROLLOUT_LOGPROBS=1 for sampling parity), and change the
+experiment name. Duplicate Hydra overrides resolve last-wins, so the
+script's baked-in values are safely overridden by these appends. Leave
+300s between jobs (GPU teardown race).
+
+### Disaggregated deployment (H100 trainer pool + H200 rollout pool)
+
+`integration/verl/fully_async_das.py` integrates the scheduler + DAS with
+verl's `verl.experimental.fully_async_policy` trainer (separate
+Rollouter/Trainer resource pools; engines never sleep; checkpoint-engine
+NCCL weight sync across pools). Loaded per job via Ray's
+`worker_process_setup_hook`; see `run_das_disagg.sh` for the full config.
+Hard-won constraints, all encoded in the adapter/script:
+
+1. **The setup hook must import nothing heavy.** It runs at worker-process
+   start, before Ray assigns `CUDA_VISIBLE_DEVICES`; importing vllm/torch
+   there initializes CUDA with all GPUs visible and every FSDP worker on a
+   node lands on physical GPU 0 (`NCCL Duplicate GPU detected`). The
+   adapter installs `sys.meta_path` post-import patchers instead, so heavy
+   integration only loads in processes that import the fully-async modules
+   (CPU-side actors).
+2. **Pool pinning** rides Ray's auto-published `accelerator_type:H100/H200`
+   node resources, injected into pool bundles by name
+   (`trainer_pool*`/`rollout_pool*`) via `PYIS_TRAINER_ACCEL_TYPE` /
+   `PYIS_ROLLOUT_ACCEL_TYPE`.
+3. **Spec decode vs rollout logprobs:** the rollouter asserts
+   `calculate_log_probs=True`, but `rollout_correction.bypass_mode=False`
+   plus `PYIS_STRIP_ROLLOUT_LOGPROBS=1` strips them at the engine request
+   (spec-decode eligible) while the trainer recomputes old_log_prob.
+4. **fsdp2 required** (`actor_rollout_ref.actor.strategy=fsdp2`): the
+   trainer's save/restore_model_to_cpu asserts DTensor params.
+5. **DAS iteration boundary without sleep/wake:** engines stamp every
+   response with their weight version (`extra_fields["global_steps"]`);
+   the scheduler client fires `begin_iteration(version+1)` on first
+   sighting of a new version. Combined with per-iteration serving (fix a),
+   delta applies land once per weight sync with zero dependence on verl
+   sleep internals — the training-window leak is structurally impossible
+   on trainer nodes (they hold no trees at all).
+6. Trajectories/step must divide the trainer world size (verl's sequence
+   balancer): 256 traj/step → 16 trainer GPUs (2 H100 nodes).
+7. In fully-async runs judge generation by the ROLLOUTER's
+   `processing_time/*` (per-sample latency) — the trainer's `timing_s/gen`
+   is queue wait, mostly hidden by the one-step-off overlap.
+
 ### Benchmarking traps (all hit while producing these numbers)
 
 1. **Logprobs silently disable speculation.** vLLM excludes any request
@@ -272,3 +470,26 @@ in worker processes.
    `collective_rpc` (payloads *or* polling) costs several s/step; all
    tree delivery now happens in a fire-and-forget drain at the wake_up
    boundary, overlapping prefill.
+7. **`worker_process_setup_hook` must not touch CUDA.** The hook runs at
+   Ray worker start, BEFORE Ray assigns `CUDA_VISIBLE_DEVICES`; importing
+   anything that initializes CUDA (vllm, torch device queries) caches
+   all-GPUs-visible and every FSDP worker on a node lands on physical
+   GPU 0 (NCCL "Duplicate GPU detected"). `fully_async_das.setup` is a
+   pure meta_path shim for exactly this reason — heavy patches fire
+   post-import, only in the CPU-side actors that import the target
+   modules.
+8. **fully_async needs fsdp2 + `calculate_log_probs=True`.** The
+   version-1 param save/restore for the old_log_prob recompute asserts
+   DTensor (fsdp1 fails), and the rollouter asserts calculate_log_probs
+   at init. `PYIS_STRIP_ROLLOUT_LOGPROBS=1` still strips at the engine
+   request (all downstream consumers are None-guarded), keeping spec
+   decode eligible while `rollout_correction.bypass_mode=False` makes
+   the trainer recompute old log-probs.
+9. **The Ray head accumulates ephemeral storage until GKE evicts it.**
+   Every `ray job submit --working-dir` copies the repo into the head's
+   session dir; 25 days of runs hit the node's eviction threshold at
+   ~44GB, killing the head mid-benchmark (all worker containers restart
+   → /tmp/verl, pip installs, HF caches wiped; only emptyDir mounts like
+   /home/ray/data survive). Mitigation (not yet automated): prune
+   /tmp/ray/session_*/runtime_resources on the head between runs, or add
+   it to the sequencer preamble.

@@ -6,8 +6,11 @@ das:
   enabled: true
 
   # Sliding window over training iterations retained in the central store.
-  # DAS paper ablations favor 16-32; larger = more matches, staler policy.
-  window_iterations: 16
+  # DAS paper ablations favor 16-32 on acceptance, but window tokens are
+  # resident in EVERY tree-holding process (measured ~280 B/token via
+  # arctic estimate_memory): 8 halves per-node residency vs 16 with most
+  # of the warm-tree benefit intact at 32B/16k scale.
+  window_iterations: 8
 
   # Iterations whose trajectories also carry a 2x-count shadow copy in the
   # trees — approximates the paper's recency down-weighting with raw-count
@@ -29,11 +32,27 @@ das:
   # pays throughout the step (arm B3 vs A2); budgets + min_token_prob do the
   # waste control. Set a positive threshold only for compute-bound regimes
   # (large models / big batches) to confine drafting to the straggler tail.
+  # Drafting-only: delta applies are governed by apply_on_poll, never this.
   tail_max_active: 0
 
-  # Engine delta-pump poll cadence. The bulk of tree data ships in the
-  # wake_up boundary drain (engine idle); mid-rollout polls only top up
-  # stragglers while the tail gate above is open.
+  # Apply gate, decoupled from the drafting gate above. The service
+  # withholds deltas until the training iteration advances (per-iteration
+  # serving), so with apply_on_poll the pump's applies land exactly once
+  # per step, during the new rollout's prefill window — never mid-decode,
+  # never in the training window, regardless of verl sleep internals.
+  # false = applies happen only in the wake_up boundary drain (requires
+  # verl to drive vLLMHttpServer.wake_up; it does not on 0.9 colocated).
+  apply_on_poll: true
+
+  # Cap on the engine-local request-scoped suffix cache (arctic
+  # SuffixDecodingCache; both hosts). Stock cap is 10k requests ~= 70M
+  # resident tokens at 16k generations; 2k bounds worker RSS without
+  # touching active requests (only completed ones are evicted).
+  engine_cache_max_requests: 2000
+
+  # Engine delta-pump poll cadence. Mid-iteration polls return nothing
+  # (per-iteration serving); this only bounds how soon after a step
+  # boundary the freshly-servable deltas are fetched and applied.
   poll_interval_s: 2.0
 
   # Upper bound on tokens per delta batch (both RPC hops); pumps loop

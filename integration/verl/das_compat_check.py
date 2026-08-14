@@ -114,6 +114,8 @@ async def main() -> None:  # noqa: PLR0914,PLR0915 - linear check script
                 )
         await _wait_for_pushes(service, expected=8)
         print("2) engine replica drains deltas and drafts the shared motif")
+        # Per-iteration serving: iteration-1 data ships once iteration 2 begins.
+        await service.begin_iteration.remote(2)
         engine1 = DASDrafterState(cfg, tree_factory=PySuffixTree)
         await _drain(service, engine1, "engine-1")
         draft = engine1.speculate(phash_a, motif_a[:3], budget=8, max_spec_factor=2.0)
@@ -136,6 +138,7 @@ async def main() -> None:  # noqa: PLR0914,PLR0915 - linear check script
         clients[0].enqueue(TrajectoryPush(phash_a, tuple(motif_a * 3), 20, "s0"))
         clients[0].flush()
         await _wait_for_pushes(service, expected=9)
+        await service.begin_iteration.remote(6)  # make the new push servable
         engine2 = DASDrafterState(cfg, tree_factory=PySuffixTree)
         await _drain(service, engine1, "engine-1")
         await _drain(service, engine2, "engine-2")
@@ -155,6 +158,7 @@ async def main() -> None:  # noqa: PLR0914,PLR0915 - linear check script
         await _wait_for_pushes(service, expected=12)
         stats = await service.get_length_stats.remote()
         _check(stats[phash_a].cls == CLS_LONG, "long trajectories reclassify the problem")
+        await service.begin_iteration.remote(7)  # ship the class update
         await _drain(service, engine1, "engine-1")
         _check(
             engine1.budget_for(phash_a, 0) == cfg.budgets.long,

@@ -63,6 +63,10 @@ class PySuffixTree:
     def remove(self, seq_id: int) -> None:
         self._seqs.pop(seq_id, None)
 
+    def estimate_memory(self) -> int:
+        # Rough parity with arctic's estimate_memory (bytes).
+        return sum(28 + 8 * len(seq) for seq in self._seqs.values())
+
     def speculate(
         self,
         pattern,
@@ -143,6 +147,12 @@ class ArcticSuffixTree:
     def remove(self, seq_id: int) -> None:
         self._tree.remove(seq_id)
 
+    def estimate_memory(self) -> int:
+        try:
+            return int(self._tree.estimate_memory())
+        except Exception:  # noqa: BLE001 - older arctic builds lack the binding
+            return 0
+
     def speculate(
         self,
         pattern,
@@ -209,6 +219,9 @@ class DASDrafterState:
         self._trees: dict[str, object] = {}
         self._cls: dict[str, int] = {}
         self._transients: dict[str, tuple[str, int]] = {}  # req_id -> (phash, seq_id)
+        # Optional handle to the engine-local (request-scoped) suffix cache,
+        # attached by the host proposer purely for memory introspection.
+        self.engine_cache: object | None = None
         # req_id -> first-seen token count minus that step's sampled tokens
         # (~= prompt length); the ngram host has no prompt boundary of its own.
         self._req_baselines: dict[str, int] = {}
@@ -350,7 +363,44 @@ class DASDrafterState:
             "rounds_seen": self.rounds_seen,
             "rounds_gated": self.rounds_gated,
             "drafts_emitted": self.drafts_emitted,
+            "tree_memory_bytes": self._trees_memory_bytes(),
+            "engine_cache_memory_bytes": _estimate_object_memory(self.engine_cache),
         }
+
+    def _trees_memory_bytes(self) -> int:
+        total = 0
+        for tree in self._trees.values():
+            estimate = getattr(tree, "estimate_memory", None)
+            if estimate is None:
+                continue
+            with contextlib.suppress(Exception):
+                total += int(estimate())
+        return total
+
+
+def _estimate_object_memory(obj: object | None) -> int:
+    """Best-effort estimate_memory() sweep over an arctic cache's trees.
+
+    SuffixDecodingCache exposes no aggregate estimator, but its member trees
+    (global + per-request prompt trees) do; sum whatever is reachable one
+    attribute level down. Returns 0 for None/opaque objects.
+    """
+    if obj is None:
+        return 0
+    total = 0
+    estimate = getattr(obj, "estimate_memory", None)
+    if estimate is not None:
+        with contextlib.suppress(Exception):
+            return int(estimate())
+    with contextlib.suppress(Exception):
+        for value in vars(obj).values():
+            candidates = value.values() if isinstance(value, dict) else [value]
+            for candidate in candidates:
+                sub = getattr(candidate, "estimate_memory", None)
+                if sub is not None:
+                    with contextlib.suppress(Exception):
+                        total += int(sub())
+    return total
 
 
 # Module-level handle so the verl worker extension (which only has the vLLM

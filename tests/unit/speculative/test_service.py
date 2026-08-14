@@ -47,9 +47,10 @@ def make_service(**overrides):
 
 
 def test_add_emits_base_and_shadow():
-    svc = make_service()
+    svc = make_service(fresh_iterations=2)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)  # per-iteration serving: data ships at the boundary
     batches, _ = drain(svc)
     adds = [a for b in batches for a in b.adds]
     assert len(adds) == 2
@@ -59,10 +60,22 @@ def test_add_emits_base_and_shadow():
     assert shadow.token_ids == base.token_ids
 
 
+def test_current_iteration_withheld_until_boundary():
+    svc = make_service()
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    # Mid-iteration: everything is withheld, replicas see nothing.
+    assert svc.get_deltas("r1", -1) is None
+    svc.begin_iteration(2)
+    batches, _ = drain(svc)
+    assert [a for b in batches for a in b.adds]
+
+
 def test_no_shadow_when_fresh_disabled():
     svc = make_service(fresh_iterations=0)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
     batches, _ = drain(svc)
     assert len([a for b in batches for a in b.adds]) == 1
 
@@ -74,12 +87,13 @@ def test_empty_trajectories_ignored():
 
 
 def test_shadow_expires_after_fresh_window():
-    svc = make_service(fresh_iterations=1, window_iterations=10)
+    svc = make_service(fresh_iterations=2, window_iterations=10)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
     _, version = drain(svc)
 
-    svc.begin_iteration(2)
+    svc.begin_iteration(3)  # cutoff = 3 - 2 = 1: iteration-1 shadows expire
     batches, _ = drain(svc, since=version)
     removals = [r for b in batches for r in b.removals]
     assert len(removals) == 1
@@ -90,6 +104,7 @@ def test_window_eviction_removes_base_seq():
     svc = make_service(fresh_iterations=1, window_iterations=2)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
     _, version = drain(svc)
 
     svc.begin_iteration(4)  # cutoff = 4 - 2 = 2 >= 1: iteration 1 evicted
@@ -114,21 +129,24 @@ def test_incremental_delta_versioning():
     svc = make_service()
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
     batches, version = drain(svc)
     assert batches
     assert not batches[0].snapshot
     assert svc.get_deltas("r1", version) is None
 
     svc.add_trajectories("w", [push("p1", [4, 5, 6])])
+    svc.begin_iteration(3)
     batches, _ = drain(svc, since=version)
     adds = [a for b in batches for a in b.adds]
     assert {tuple(a.token_ids) for a in adds} == {(4, 5, 6)}
 
 
 def test_bounded_batches_drain_fully():
-    svc = make_service(max_delta_batch_tokens=5)
+    svc = make_service(max_delta_batch_tokens=5, fresh_iterations=2)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1] * 4), push("p2", [2] * 4)])
+    svc.begin_iteration(2)
     batches, _ = drain(svc)
     assert len(batches) > 1
     adds = [a for b in batches for a in b.adds]
@@ -137,10 +155,11 @@ def test_bounded_batches_drain_fully():
 
 def test_snapshot_when_log_truncated(monkeypatch):
     monkeypatch.setattr(service_module, "_LOG_CAPACITY", 4)
-    svc = make_service()
+    svc = make_service(fresh_iterations=2)
     svc.begin_iteration(1)
     for i in range(6):
         svc.add_trajectories("w", [push("p1", [i, i, i])])
+    svc.begin_iteration(2)
     payload = svc.get_deltas("r1", -1)
     batch = deserialize_delta_batch(payload)
     assert batch.snapshot
@@ -150,10 +169,30 @@ def test_snapshot_when_log_truncated(monkeypatch):
     assert "p1" in batch.problem_cls
 
 
+def test_snapshot_excludes_current_iteration(monkeypatch):
+    monkeypatch.setattr(service_module, "_LOG_CAPACITY", 1)
+    svc = make_service(fresh_iterations=0)
+    svc.begin_iteration(1)
+    svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
+    svc.add_trajectories("w", [push("p1", [4, 5, 6])])  # in-progress iteration
+
+    payload = svc.get_deltas("r1", -1)
+    batch = deserialize_delta_batch(payload)
+    assert batch.snapshot
+    # Only the servable (prior-iteration) sequence ships in the snapshot...
+    assert {tuple(a.token_ids) for a in batch.adds} == {(1, 2, 3)}
+    # ...and the withheld one arrives incrementally after the next boundary.
+    svc.begin_iteration(3)
+    batches, _ = drain(svc, since=batch.to_version)
+    assert {tuple(a.token_ids) for b in batches for a in b.adds} == {(4, 5, 6)}
+
+
 def test_snapshot_applies_after_reset():
     svc = make_service()
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
+    svc.begin_iteration(2)
     _, version = drain(svc)
     svc.reset("model swap")
     payload = svc.get_deltas("r1", version)
@@ -165,23 +204,26 @@ def test_snapshot_applies_after_reset():
 
 def test_max_seqs_per_problem_evicts_oldest():
     svc = make_service(
-        limits=DASServiceLimits(max_total_tokens=10**9, max_problems=10, max_seqs_per_problem=2)
+        fresh_iterations=0,
+        limits=DASServiceLimits(max_total_tokens=10**9, max_problems=10, max_seqs_per_problem=2),
     )
     svc.begin_iteration(1)
     for i in range(2):
         svc.add_trajectories("w", [push("p1", [i, i])])
     # Sync a replica first: eviction removals only ship to replicas that
     # already hold the sequence (fresh drains compact them away instead).
+    svc.begin_iteration(2)
     _, version = drain(svc)
     svc.add_trajectories("w", [push("p1", [9, 9])])
+    svc.begin_iteration(3)
     batches, _ = drain(svc, since=version)
     removals = [r for b in batches for r in b.removals]
-    # Oldest seq evicted: base + shadow removal.
-    assert len(removals) == 2
+    # Oldest base seq evicted (no shadows: fresh_iterations=0).
+    assert len(removals) == 1
     # A fresh replica sees only the two live sequences, no removals.
     fresh_batches, _ = drain(svc, replica="fresh", since=-1)
     assert [r for b in fresh_batches for r in b.removals] == []
-    assert len([a for b in fresh_batches for a in b.adds]) == 4  # 2 live x (base+shadow)
+    assert len([a for b in fresh_batches for a in b.adds]) == 2  # 2 live base seqs
 
 
 def test_max_problems_drops_lru():
@@ -190,6 +232,7 @@ def test_max_problems_drops_lru():
     )
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1]), push("p2", [2]), push("p3", [3])])
+    svc.begin_iteration(2)
     batches, _ = drain(svc)
     dropped = [d for b in batches for d in b.dropped_problems]
     assert dropped == ["p1"]
@@ -219,6 +262,7 @@ def test_length_stats_and_class_transitions():
     assert stats.count == 21
     assert stats.p50 == 20.0
 
+    svc.begin_iteration(2)
     batches, _ = drain(svc)
     cls_updates = {}
     for b in batches:
@@ -230,11 +274,12 @@ def test_fresh_replica_replay_compacts_cancelled_history():
     """Regression: a fresh replica draining add+evict history in one batch
     must not resurrect evicted sequences (wire format loses log order, so
     the service must cancel add/removal pairs within the batch range)."""
-    svc = make_service(fresh_iterations=1, window_iterations=2)
+    svc = make_service(fresh_iterations=2, window_iterations=2)
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
     svc.begin_iteration(5)  # evicts iteration 1 entirely
     svc.add_trajectories("w", [push("p1", [7, 8, 9])])
+    svc.begin_iteration(6)
 
     batches, _ = drain(svc, replica="fresh", since=-1)
     adds = [a for b in batches for a in b.adds]
@@ -254,6 +299,7 @@ def test_dropped_problem_purges_in_range_adds():
     svc.begin_iteration(1)
     svc.add_trajectories("w", [push("p1", [1, 2, 3])])
     svc.add_trajectories("w", [push("p2", [4, 5, 6])])  # drops p1 (LRU cap 1)
+    svc.begin_iteration(2)
     batches, _ = drain(svc, replica="fresh", since=-1)
     adds = [a for b in batches for a in b.adds]
     dropped = [d for b in batches for d in b.dropped_problems]

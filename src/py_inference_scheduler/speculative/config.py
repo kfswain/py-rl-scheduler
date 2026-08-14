@@ -110,8 +110,22 @@ class DASConfig:
     # Occupancy gate: 0 (default) drafts every round — decode is memory-
     # bound at these batch sizes, so verification has slack all step.
     # Positive values confine drafting to the collapsed-batch tail, for
-    # compute-bound regimes only.
+    # compute-bound regimes only. Drafting-only: delta applies are governed
+    # by apply_on_poll below, never by this knob.
     tail_max_active: int = 0
+    # Apply gate, decoupled from the drafting gate above. True: the delta
+    # pump applies servable batches as soon as it fetches them — with
+    # per-iteration serving they only become available at the step boundary,
+    # so applies land during the rollout's prefill window regardless of
+    # verl's engine sleep internals. False: applies happen exclusively in
+    # the wake_up boundary drain (requires verl to drive vLLMHttpServer.wake_up).
+    apply_on_poll: bool = True
+    # Cap on the engine-local (request-scoped) arctic SuffixDecodingCache.
+    # The stock 10k-request cap holds ~70M tokens of resident suffix
+    # structures per worker at 16k generations; ~2k bounds it without
+    # hurting the own-context/self-repetition hit rate (active requests are
+    # never evicted, only completed ones).
+    engine_cache_max_requests: int = 2000
     service_name: str = "pyis_das_suffix_service"
     service_namespace: str = "pyis"
     budgets: DASBudgetConfig = field(default_factory=DASBudgetConfig)
@@ -137,6 +151,8 @@ def _build(section: dict) -> DASConfig:
         reset_on_weight_update=bool(section.get("reset_on_weight_update")),
         strip_rollout_logprobs=bool(section.get("strip_rollout_logprobs", True)),
         tail_max_active=int(section.get("tail_max_active", 0)),
+        apply_on_poll=bool(section.get("apply_on_poll", True)),
+        engine_cache_max_requests=int(section.get("engine_cache_max_requests", 2000)),
         service_name=str(section.get("service_name", "pyis_das_suffix_service")),
         service_namespace=str(section.get("service_namespace", "pyis")),
         budgets=DASBudgetConfig(

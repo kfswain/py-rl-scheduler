@@ -71,8 +71,14 @@ class VllmEnginePatch:
         - route verl's worker_extension_cls to DASWorkerExtension so the DAS
           RPCs exist inside every GPU worker (and, as a fallback injection
           path, so the proposer patch applies even without pip metadata);
-        - start the delta pump after the engine server launches;
-        - gate the pump while the engine is slept for training.
+        - start the delta pump after the engine server launches.
+
+        Apply timing does NOT depend on verl's sleep/wake plumbing: the
+        service withholds deltas until the training iteration advances
+        (per-iteration serving), so the pump only ever receives data at the
+        step boundary and applies land in the rollout's prefill window. The
+        wake_up drain below is a belt-and-braces flush for deployments where
+        verl does drive vLLMHttpServer.wake_up.
         """
         if getattr(http_server_cls, "_das_patched", False):
             return
@@ -101,19 +107,10 @@ class VllmEnginePatch:
 
         http_server_cls.launch_server = das_launch
 
-        original_sleep = getattr(http_server_cls, "sleep", None)
-        if original_sleep is not None:
-            async def das_sleep(self, *args, **kwargs):
-                self._das_engine_sleeping = True
-                return await original_sleep(self, *args, **kwargs)
-
-            http_server_cls.sleep = das_sleep
-
         original_wake = getattr(http_server_cls, "wake_up", None)
         if original_wake is not None:
             async def das_wake_up(self, *args, **kwargs):
                 result = await original_wake(self, *args, **kwargs)
-                self._das_engine_sleeping = False
                 # Boundary drain, fire-and-forget: applies overlap the
                 # rollout's prefill phase instead of blocking its start.
                 prior = getattr(self, "_das_drain_task", None)
@@ -193,18 +190,20 @@ def _start_das_pump(server, cfg: DASConfig) -> None:
             "engine (stock suffix decoding stays on)."
         )
         return
-    server._das_engine_sleeping = getattr(server, "_das_engine_sleeping", False)
     server._das_service = None
     server._das_version = -1
     server._das_replica_id = f"{socket.gethostname()}-{uuid.uuid4().hex[:8]}"
     server._das_buffer = []  # prefetched (to_version, payload) pairs, in order
     server._das_buffer_bytes = 0
+    server._das_apply_lock = asyncio.Lock()
     loop = asyncio.get_running_loop()
     server._das_pump_task = loop.create_task(_das_delta_pump(server, cfg))
     logger.info(
-        "DAS: delta pump started (service-side prefetch, poll %.1fs; ALL engine "
-        "applies happen in the wake_up boundary drain — zero mid-decode RPCs)",
+        "DAS: delta pump started (poll %.1fs, apply_on_poll=%s; the service "
+        "withholds deltas until the iteration advances, so applies land once "
+        "per step at the rollout boundary)",
         cfg.poll_interval_s,
+        cfg.apply_on_poll,
     )
 
 
@@ -273,27 +272,36 @@ async def _das_boundary_drain_bg(server, cfg: DASConfig) -> None:
 
 
 async def _das_apply_boundary(server, cfg: DASConfig) -> int:
-    """Apply buffered payloads + any remainder. Engine idle: RPCs are cheap.
+    """Fetch any remainder and apply all buffered payloads, in order.
 
-    The only place engine-side applies ever happen.
+    The lock serializes the pump's apply-on-poll path against the wake_up
+    drain (both run on process0's event loop, but interleave at awaits).
     """
     await _das_prefetch_available(server, cfg)
+    return await _das_apply_buffered(server)
+
+
+async def _das_apply_buffered(server) -> int:
     applied = 0
-    while server._das_buffer:
-        to_version, payload = server._das_buffer.pop(0)
-        server._das_buffer_bytes -= len(payload)
-        await _das_collective_rpc(server, "das_apply_deltas", payload)
-        server._das_version = to_version
-        applied += 1
+    async with server._das_apply_lock:
+        while server._das_buffer:
+            to_version, payload = server._das_buffer.pop(0)
+            server._das_buffer_bytes -= len(payload)
+            await _das_collective_rpc(server, "das_apply_deltas", payload)
+            server._das_version = to_version
+            applied += 1
     return applied
 
 
 async def _das_delta_pump(server, cfg: DASConfig) -> None:
-    """Service-side prefetch loop. Never touches the engine.
+    """Poll the service; per-iteration serving makes polls boundary-aligned.
 
-    Payload delivery to the GPU workers happens exclusively in the wake_up
-    boundary drain; this loop just keeps the local buffer warm so the
-    boundary drain is a handful of local applies instead of a fetch storm.
+    Mid-iteration polls return nothing (the service withholds the current
+    iteration's entries), so with apply_on_poll the pump's collective_rpc
+    applies fire once per training step, right after the driver's
+    begin_iteration — i.e. during the new rollout's prefill window. With
+    apply_on_poll=false this loop only prefetches and the wake_up boundary
+    drain delivers.
     """
     errors = 0
     while True:
@@ -302,6 +310,10 @@ async def _das_delta_pump(server, cfg: DASConfig) -> None:
                 await asyncio.sleep(5.0)
                 continue
             await _das_prefetch_available(server, cfg)
+            if cfg.apply_on_poll and server._das_buffer:
+                applied = await _das_apply_buffered(server)
+                if applied:
+                    logger.info("DAS: pump applied %d batches at iteration boundary", applied)
             errors = 0
             await asyncio.sleep(cfg.poll_interval_s)
         except asyncio.CancelledError:
@@ -309,6 +321,6 @@ async def _das_delta_pump(server, cfg: DASConfig) -> None:
         except Exception as e:  # noqa: BLE001
             errors += 1
             if errors == 1 or errors % 30 == 0:
-                logger.warning("DAS: delta prefetch error (%d consecutive): %s", errors, e)
+                logger.warning("DAS: delta pump error (%d consecutive): %s", errors, e)
             server._das_service = None
             await asyncio.sleep(min(30.0, cfg.poll_interval_s * (2 ** min(errors, 4))))

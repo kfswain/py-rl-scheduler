@@ -209,6 +209,7 @@ def test_service_to_state_end_to_end():
     svc.add_trajectories(
         "w", [TrajectoryPush("p1", (10, 20, 30, 40, 50), prompt_len=2, server_id="s")]
     )
+    svc.begin_iteration(2)  # per-iteration serving: data ships at the boundary
     version = -1
     while True:
         payload = svc.get_deltas("r1", version)

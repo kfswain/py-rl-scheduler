@@ -75,6 +75,11 @@ class SuffixDataService:
         self.cfg = config or DASConfig()
         self._iteration = 0
         self._version = 0
+        # Per-iteration serving: entries logged during the in-progress
+        # iteration are withheld from replicas until begin_iteration advances
+        # past it. Applies therefore land engine-side once per training step,
+        # right at the rollout boundary, independent of verl sleep internals.
+        self._servable_version = 0
         self._next_seq = 0
         self._problems: dict[str, _ProblemState] = {}
         self._problem_lru: OrderedDict[str, None] = OrderedDict()
@@ -206,6 +211,10 @@ class SuffixDataService:
             self._iteration = step
             self._expire_shadows()
             self._expire_window()
+            # Everything logged so far (prior iterations' adds + this
+            # boundary's expiries) becomes servable in one step-aligned unit;
+            # entries logged from here on wait for the next boundary.
+            self._servable_version = self._version
         return {
             "iteration": self._iteration,
             "version": self._version,
@@ -235,11 +244,12 @@ class SuffixDataService:
 
     def get_deltas(self, replica_id: str, since_version: int) -> bytes | None:
         self._replica_versions[replica_id] = since_version
-        # A fresh replica (-1) and an empty service (version 0) are in sync:
-        # entry versions start at 1.
-        if max(since_version, 0) >= self._version:
+        # Per-iteration serving: only entries up to the last begin_iteration
+        # boundary ship. A fresh replica (-1) and an empty service (version 0)
+        # are in sync: entry versions start at 1.
+        if max(since_version, 0) >= self._servable_version:
             return None
-        # Incremental replay needs every entry in (since_version, current] to
+        # Incremental replay needs every entry in (since_version, servable] to
         # still be in the log; versions are contiguous starting at 1.
         if max(since_version + 1, 1) < self._log_floor():
             self._snapshots_served += 1
@@ -271,6 +281,8 @@ class SuffixDataService:
         for version, kind, payload in self._log:
             if version <= since_version:
                 continue
+            if version > self._servable_version:
+                break
             if kind == _ADD:
                 delta: TrajectoryDelta = payload  # type: ignore[assignment]
                 if budget - len(delta.token_ids) < 0 and adds:
@@ -300,20 +312,28 @@ class SuffixDataService:
         return batch
 
     def _build_snapshot(self) -> DeltaBatch:
+        # to_version is the servable ceiling: current-iteration sequences are
+        # excluded here (their adds are withheld log entries with versions
+        # above the ceiling) and ship incrementally at the next boundary.
         batch = DeltaBatch(
             from_version=-1,
-            to_version=self._version,
+            to_version=self._servable_version,
             iteration=self._iteration,
             snapshot=True,
         )
         for problem_id, prob in self._problems.items():
+            served_any = False
             for seq_id, rec in prob.seqs.items():
+                if rec.iteration >= self._iteration:
+                    continue
+                served_any = True
                 batch.adds.append(TrajectoryDelta(problem_id, seq_id, rec.token_ids))
                 if rec.has_shadow:
                     batch.adds.append(
                         TrajectoryDelta(problem_id, seq_id + SHADOW_OFFSET, rec.token_ids)
                     )
-            batch.problem_cls[problem_id] = prob.cls
+            if served_any or not prob.seqs:
+                batch.problem_cls[problem_id] = prob.cls
         return batch
 
     # ----------------------------------------------------------------- ops
@@ -327,8 +347,10 @@ class SuffixDataService:
         self._total_tokens = 0
         # Version stays monotonic with an empty log, so every replica at an
         # older version falls off the log and receives an empty snapshot,
-        # which clears its local state.
+        # which clears its local state. Serve it immediately: a reset must
+        # not wait out the current iteration.
         self._version += 1
+        self._servable_version = self._version
 
     def get_length_stats(self) -> dict[str, LengthStats]:
         out: dict[str, LengthStats] = {}
@@ -345,12 +367,17 @@ class SuffixDataService:
         return out
 
     def get_metrics(self) -> dict[str, float]:
+        # Lag counts servable-but-unfetched entries only; withheld entries
+        # are not lag (no replica may have them yet by design).
         lag = {
-            replica: float(self._version - v) for replica, v in self._replica_versions.items()
+            replica: max(0.0, float(self._servable_version - v))
+            for replica, v in self._replica_versions.items()
         }
         return {
             "das_iteration": float(self._iteration),
             "das_log_version": float(self._version),
+            "das_servable_version": float(self._servable_version),
+            "das_withheld_entries": float(self._version - self._servable_version),
             "das_problem_count": float(len(self._problems)),
             "das_total_tokens": float(self._total_tokens),
             "das_window_iterations": float(len(self._window)),

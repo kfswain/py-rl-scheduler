@@ -75,7 +75,10 @@ def das_patch_suffix_proposer() -> None:
         if not das_enabled():
             return
         try:
-            self._das_state = DASDrafterState(load_das_config())
+            cfg = load_das_config()
+            self._das_state = DASDrafterState(cfg)
+            _cap_stock_suffix_cache(self, cfg)
+            self._das_state.engine_cache = getattr(self, "suffix_cache", None)
             register_active_state(self._das_state)
             logger.info("DAS: suffix proposer initialized with per-problem drafter state")
         except Exception:
@@ -103,6 +106,36 @@ def das_patch_suffix_proposer() -> None:
     SuffixDecodingProposer.propose = das_propose
     SuffixDecodingProposer._das_patched = True
     logger.info("DAS: SuffixDecodingProposer patched in place")
+
+
+def _cap_stock_suffix_cache(proposer, cfg) -> None:
+    """Rebuild the stock request-scoped cache with a bounded request cap.
+
+    The stock 10k-request cap can hold ~70M tokens of resident suffix
+    structures per GPU-worker process at long-generation scale. Rebuilding
+    only ever happens at proposer init (cache is empty); any signature
+    drift leaves the stock cache in place.
+    """
+    if cfg.engine_cache_max_requests <= 0:
+        return
+    cache = getattr(proposer, "suffix_cache", None)
+    if cache is None:
+        return
+    try:
+        current_cap = int(getattr(cache, "max_cached_requests", 0))
+        if 0 < current_cap <= cfg.engine_cache_max_requests:
+            return
+        proposer.suffix_cache = type(cache)(
+            max_tree_depth=int(getattr(cache, "max_tree_depth", cfg.max_tree_depth)),
+            max_cached_requests=cfg.engine_cache_max_requests,
+        )
+        logger.info(
+            "DAS: engine-local suffix cache capped at %d cached requests (stock: %s)",
+            cfg.engine_cache_max_requests,
+            current_cap or "unknown",
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("DAS: could not cap stock suffix cache (%s); stock cap stays", e)
 
 
 def _das_propose_impl(self, state: DASDrafterState, input_batch, sampled_token_ids):  # noqa: PLR0912,PLR0915
@@ -222,7 +255,8 @@ def das_patch_ngram_proposer() -> None:
         try:
             cfg = load_das_config()
             self._das_state = DASDrafterState(cfg)
-            self._das_cache = _build_suffix_cache(cfg.max_tree_depth)
+            self._das_cache = _build_suffix_cache(cfg)
+            self._das_state.engine_cache = self._das_cache
             register_active_state(self._das_state)
             logger.info(
                 "DAS: ngram proposer hosting DAS (suffix cache: %s)",
@@ -290,15 +324,23 @@ def das_patch_ngram_proposer() -> None:
     logger.info("DAS: NgramProposer patched in place (ngram host)")
 
 
-def _build_suffix_cache(max_tree_depth: int):
-    """Arctic SuffixDecodingCache for the ngram host, or None without arctic."""
+def _build_suffix_cache(cfg):
+    """Arctic SuffixDecodingCache for the ngram host, or None without arctic.
+
+    Request cap from cfg.engine_cache_max_requests (0/negative = arctic's
+    10k stock cap): the cache's global tree is the dominant resident-memory
+    term in long-generation runs, ~70M tokens at the stock cap.
+    """
     try:
         from arctic_inference.suffix_decoding import (  # type: ignore[import-not-found]
             SuffixDecodingCache,
         )
 
+        max_requests = (
+            cfg.engine_cache_max_requests if cfg.engine_cache_max_requests > 0 else 10_000
+        )
         return SuffixDecodingCache(
-            max_tree_depth=max_tree_depth, max_cached_requests=10_000
+            max_tree_depth=cfg.max_tree_depth, max_cached_requests=max_requests
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("DAS: arctic SuffixDecodingCache unavailable (%s)", e)
