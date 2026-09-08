@@ -134,7 +134,8 @@ def check_ray_cluster(args) -> list[str]:
     distinct = {c for c in commits.values() if "NO_VERL" not in c}
     if missing:
         record("FAIL", "verl on all ray pods",
-               f"missing on {missing} - reccomended use provided config to ensure uniformity across Ray fleet")
+               f"missing on {missing} - recommended: use provided config to ensure "
+               "uniformity across Ray fleet")
     elif len(distinct) > 1:
         record("FAIL", "verl commit consistent", f"mismatched commits: {commits}")
     else:
