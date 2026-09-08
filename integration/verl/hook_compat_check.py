@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import collections
+from typing import cast
 
 import ray
 from omegaconf import OmegaConf
@@ -61,20 +62,21 @@ async def main() -> int:
     print("layout:", verl_hook._VERL_LAYOUT)
     assert verl_hook._VERL_LAYOUT == "modern", "expected modern layout on this verl build"  # noqa: S101
 
-    servers = {f"srv-{i}": FakeServer.remote(f"srv-{i}") for i in range(3)}
+    servers = {f"srv-{i}": FakeServer.remote(f"srv-{i}") for i in range(3)}  # type: ignore[attr-defined]
     lb = GlobalRequestLoadBalancer.remote(servers)
 
     config = OmegaConf.create({"actor_rollout_ref": {"rollout": {"ignore_eos": False}}})
     client = verl_hook.InferenceSchedulerServerClient(config, load_balancer_handle=lb)
 
     shared_prefix = list(range(400))
-    routed = collections.defaultdict(int)
+    routed: dict[str, int] = collections.defaultdict(int)
     for i in range(4):  # same prefix, growing tail: multi-turn shape
-        out = await client.generate(
+        # generate is a pass-through of the rollout server's reply: a dict from FakeServer.
+        out = cast(dict, await client.generate(
             request_id=f"traj-{i}",
             prompt_ids=shared_prefix + list(range(1000 + i * 50, 1000 + (i + 1) * 50)),
             sampling_params={"temperature": 1.0},
-        )
+        ))
         routed[out["server"]] += 1
 
     n_endpoints = len(client.core.endpoints)

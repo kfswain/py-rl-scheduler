@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from typing import Any
 
 import ray
 from omegaconf import DictConfig  # type: ignore[import-not-found]
@@ -314,7 +315,7 @@ else:  # modern layout
         def __init__(
             self,
             config: DictConfig,
-            llm_client: object,
+            llm_client: Any,  # noqa: ANN401 - verl LLMServerClient; type unavailable off-cluster
             teacher_client: dict | None = None,
             reward_loop_worker_handles: list[ray.actor.ActorHandle] | None = None,
         ) -> None:

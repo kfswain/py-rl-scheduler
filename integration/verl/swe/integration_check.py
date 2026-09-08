@@ -57,8 +57,8 @@ class ScriptedServerManager:
         )
 
 
-def fetch_gold_fix(offset: int) -> dict[str, str]:
-    """{repo-relative path: new content} for the instance's gold commit (non-test files)."""
+def fetch_gold_fix(offset: int) -> tuple[str, str, dict[str, str]]:
+    """Gold commit for the instance: (repo_name, commit_hash, {path: new content})."""
     with urllib.request.urlopen(R2E_ROWS_URL.format(offset=offset), timeout=60) as r:  # noqa: S310
         row = json.load(r)["rows"][0]["row"]
     files = {}

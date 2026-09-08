@@ -45,7 +45,8 @@ def parse_bash_command(text: str) -> str | None:
     blocks = BASH_BLOCK_RE.findall(text)
     if not blocks:
         return None
-    return blocks[-1].strip()
+    command: str = blocks[-1]
+    return command.strip()
 
 
 def is_submit(command: str) -> bool:

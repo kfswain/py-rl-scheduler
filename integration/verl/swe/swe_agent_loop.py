@@ -47,7 +47,7 @@ from verl.experimental.agent_loop.agent_loop import (  # type: ignore[import-not
 from verl.utils.profiler import simple_timer  # type: ignore[import-not-found]
 
 from integration.verl.swe.pristine_grader import grade_patch_pristine
-from integration.verl.swe.sandbox import get_thread_client, make_name
+from integration.verl.swe.sandbox import SandboxClient, get_thread_client, make_name
 from integration.verl.swe.scaffold import (
     NO_COMMAND_OBSERVATION,
     build_system_prompt,
@@ -248,7 +248,7 @@ class SWEAgentLoop(AgentLoopBase):
         client.exec(name, BASELINE_CMD, timeout=120)
         return client
 
-    def _run_command(self, client, name: str, command: str) -> tuple[int, str]:
+    def _run_command(self, client: SandboxClient, name: str, command: str) -> tuple[int, str]:
         import shlex
 
         wrapped = f"cd /testbed && timeout {self.cmd_timeout_s} sh -c {shlex.quote(command)}"

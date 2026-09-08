@@ -52,10 +52,24 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false
 
-# Skip following imports for third-party packages whose source uses Python 3.10+ syntax. 
+# Skip following imports for third-party packages whose source uses Python 3.10+ syntax.
 [[tool.mypy.overrides]]
 module = ["pytest.*", "ray.*"]
 follow_imports = "skip"
+
+# Runtime-only deps of the verl integration: installed on the cluster, not in this env.
+[[tool.mypy.overrides]]
+module = [
+    "datasets.*",
+    "omegaconf.*",
+    "pandas.*",
+    "safetensors.*",
+    "torch.*",
+    "transformers.*",
+    "verl.*",
+    "wandb.*",
+]
+ignore_missing_imports = true
 
 [tool.ruff]
 target-version = "py38"

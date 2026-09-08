@@ -57,7 +57,7 @@ def spec_key(classname: str, name: str) -> str:
     (``[...]``) are part of ``name`` and kept as-is.
     """
     segments = [s for s in classname.split(".") if s] if classname else []
-    class_segments = []
+    class_segments: list[str] = []
     for seg in segments:
         if class_segments or _CLASS_SEGMENT.match(seg):
             class_segments.append(seg)

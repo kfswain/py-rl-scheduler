@@ -61,7 +61,7 @@ def get_thread_client(namespace: str = "agents-system") -> SandboxClient:
     shared across threads (observed as intermittent NoneType decode errors),
     so every worker thread gets its own client.
     """
-    cache = getattr(_thread_local, "clients", None)
+    cache: dict[str, SandboxClient] | None = getattr(_thread_local, "clients", None)
     if cache is None:
         cache = _thread_local.clients = {}
     if namespace not in cache:
